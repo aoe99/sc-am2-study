@@ -17,7 +17,8 @@ export default async function renderSetup({ view, args, go, ctx }) {
   if (mode === 'session') return sessionSetup(view, go, ctx, states, section);
 
   // --- practice ---
-  const chosen = { count: 25, sessionIds: [], tags: [], onlyUnseen: false, onlyWrong: false };
+  const chosen = { count: 25, sessionIds: [], tags: [], onlyUnseen: false,
+                   onlyWrong: false, onlyReused: false };
   const countRow = el('div', { class: 'chips' });
   COUNTS.forEach(n => {
     const c = el('button', {
@@ -51,6 +52,7 @@ export default async function renderSetup({ view, args, go, ctx }) {
 
   const unseen = el('input', { type: 'checkbox', onchange: e => { chosen.onlyUnseen = e.target.checked; updateCount(); } });
   const wrong = el('input', { type: 'checkbox', onchange: e => { chosen.onlyWrong = e.target.checked; updateCount(); } });
+  const reused = el('input', { type: 'checkbox', onchange: e => { chosen.onlyReused = e.target.checked; updateCount(); } });
   const grading = el('select', {},
     el('option', { value: 'immediate' }, '1問ごとに即時判定'),
     el('option', { value: 'end' }, '最後にまとめて採点'));
@@ -85,7 +87,10 @@ export default async function renderSetup({ view, args, go, ctx }) {
       tagRow,
       el('div', { style: 'margin-top:10px' },
         el('label', { class: 'check' }, unseen, '未着手のみ'),
-        el('label', { class: 'check' }, wrong, '間違えた問題のみ'))),
+        el('label', { class: 'check' }, wrong, '間違えた問題のみ'),
+        el('label', { class: 'check' }, reused, '再出題された問題のみ'),
+        el('p', { class: 'muted', style: 'margin:0 0 0 30px',
+                  text: '過去に2回以上出題された問題に絞る。' }))),
     el('div', { class: 'card' },
       el('h2', { text: '採点方式' }), grading),
     el('div', { class: 'card' }, available, el('div', { class: 'row' }, startBtn,

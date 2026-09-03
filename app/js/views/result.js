@@ -101,9 +101,13 @@ async function resultRow(item, run) {
   const sess = data.sessions().find(s => s.id === q.sessionId);
   const wrap = el('details', { style: 'border-top:1px solid var(--line);padding:8px 0' });
   const mark = item.correct ? '○' : (item.selected === null ? '—' : '×');
+  const group = data.groupOf(q);
   wrap.append(el('summary', { style: 'cursor:pointer;min-height:44px;display:flex;gap:10px;align-items:center' },
     el('span', { style: `font-weight:700;color:var(--${item.correct ? 'ok' : 'ng'})`, text: mark }),
     el('span', { style: 'flex:1;min-width:0' },
+      group.length > 1
+        ? el('span', { class: 'chip reuse', style: 'margin-right:6px',
+                       text: `${group.length}回` }) : null,
       el('span', { class: 'muted', text: sess ? `${sess.label} 問${q.no}  ` : '' }),
       q.text.slice(0, 46) + (q.text.length > 46 ? '…' : ''))));
 

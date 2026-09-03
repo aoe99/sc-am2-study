@@ -60,6 +60,9 @@ export function build(opts, states) {
   } else {
     if (opts.onlyUnseen) pool = pool.filter(q => !(stateBy.get(q.id) || {}).attempts);
     if (opts.onlyWrong) pool = pool.filter(q => (stateBy.get(q.id) || {}).lastResult === false);
+    // Questions IPA has already set more than once are the ones most likely
+    // to come round again.
+    if (opts.onlyReused) pool = pool.filter(q => data.groupOf(q).length > 1);
   }
 
   // §5-6: 本番モードと年度別は常に回ごとの扱い。

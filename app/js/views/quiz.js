@@ -135,12 +135,26 @@ export default async function renderQuiz({ view, extra, go, ctx }) {
     const graded = item.selected !== null && run.grading === 'immediate';
     const reveal = graded && item.revealed;
 
+    // Past papers repeat: a question that has already been set several times is
+    // worth more study than one seen once, so the count leads the tags.
+    const group = data.groupOf(q);
     body.append(el('div', { class: 'qmeta' },
       el('span', { class: 'no', text: `${run.index + 1} / ${run.items.length}` }),
+      run.mode !== 'exam' && group.length > 1
+        ? el('span', { class: 'chip reuse', text: `${group.length}回出題` }) : null,
       run.mode !== 'exam' && sess
         ? el('span', { class: 'chip static', text: `${sess.label} 問${q.no}` }) : null,
       ...(run.mode === 'exam' ? [] : (q.tags || []).map(t =>
         el('span', { class: 'chip static', text: t })))));
+
+    if (run.mode !== 'exam' && group.length > 1) {
+      const labels = group.map(g => {
+        const s = data.sessions().find(x => x.id === g.sessionId);
+        return (s ? s.label : g.sessionId).replace(/年度\s*/, '');
+      });
+      body.append(el('p', { class: 'muted reuse-list' },
+        `初出 ${labels[0]}  /  再出題 ${labels.slice(1).join('、')}`));
+    }
 
     if (useNav) {
       body.append(el('button', {
