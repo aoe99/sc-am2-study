@@ -1,79 +1,127 @@
-# 作業状況（2026-09-03 時点）
+# 作業状況（2026-09-04 時点）
 
-## 完了
+**完成して稼働中。** 以降は不具合の修正と改善が中心。
 
-### Phase 1 — 問題データの作成 ✅
-19回 × （午前I 30問 + 午前II 25問）= **1,045問**。`data/questions.json`。
+- 公開先: **https://aoe99.github.io/sc-am2-study/app/**（アプリ名: SC試験対策）
+- 問題データ: 19回 × （午前I 30問 + 午前II 25問）= **1,045問**
+- 検証はすべて通過（IPA解答例と教科書解説の正解一致 1,045/1,045）
 
-| 項目 | 結果 |
-|---|---|
-| 各回とも規定の問数 | ✓ 午前Ⅰ30問 + 午前Ⅱ25問 × 19回 |
-| 合計 1,045 問 | ✓ |
-| 全問に 問題文・選択肢4つ・正解・解説 | ✓ |
-| **IPA解答例と教科書解説の正解の一致** | **✓ 1,045/1,045** |
-| 制御文字・文字化け・連続空白・ID重複 | ✓ なし |
-| 図表付き | 216問 |
-| 選択肢そのものが表・図 | 81問（選択肢ごとに画像化） |
-| 選択肢が図の中にしかない | 16問（図＋ア〜エのボタン） |
-| 要確認 | 193問（`data/build/review.md`） |
+---
 
-### Phase 2 — 重複問題の統合 ✅
-- **再出題 93グループ / 実質 928問**（最多5回）
-- 「同じ設問文で選択肢が異なる」40組は統合していない（正解が変わるため）
-- 区分をまたいだグループ化はしない（午前Iと午前IIは別の試験）
+## 修正を依頼されたときの手順
 
-### Phase 3 — Webアプリ ✅
-`app/`。ビルド工程なし、HTML + CSS + ES modules のみ。外部通信ゼロ。
+**別コンテキストで指示を受けた場合も、修正から公開・コミットまで通しで行う。**
+途中で止めて確認を取る必要はない（初期開発時のフェーズ確認はもう不要）。
 
-- 区分の切り替え（午前Ⅰ / 午前Ⅱ）。本番モードの問数・制限時間・合格ラインは区分から引く
-- 4モード（練習 / 本番 / 復習 / 年度別）
-- 本番モードは実際の紙の試験に合わせ、前後自由に移動・飛ばして戻る・解答の
-  書き直しができる。問題番号の一覧で未解答と見直し印を把握できる。
-  採点までは学習記録に書き込まない
-- 単一ファイル `data/sc-data.json`（約19MB、図表540枚を内蔵）をファイル選択で読み込み
-  → IndexedDB。実測 **1,045問・540図表を330ms**、ヒープ55MB
-- 学習記録の書き出し／読み込みは往復検証済み
-- **公開先: https://aoe99.github.io/sc-am2-study/app/**（アプリ名: SC試験対策）
-  Service Worker の登録・activated とシェル22ファイルのキャッシュを HTTPS 上で確認済み
+### 1. 原因を実データで特定する
 
-## 未確認
+推測で直さない。必ず現物を見る。
 
-- **iPhone 実機**での表示と「ホーム画面に追加」。検証は埋め込み Chromium の
-  375px エミュレーションのみ
-- Safari(mac) / Safari(iOS) の実機表示
+```bash
+# 対象の問題が今どうなっているか
+python3 -c "import json;d=json.load(open('data/questions.json'));q=[x for x in d['questions'] if x['id']=='R05haru-am2-17'][0];print(q)"
+
+# OCRの生の座標（不具合の原因はたいていここに出る）
+python3 - <<'PY'
+import importlib.util, sys
+sys.argv=['x','--section','am2']          # am1 / am2
+spec=importlib.util.spec_from_file_location('p','tools/04_parse.py')
+p=importlib.util.module_from_spec(spec); spec.loader.exec_module(p)
+lines=p.load('R05haru'); h=p.find_headings(lines); order=sorted(h)
+k=order.index(17); end=h[order[k+1]] if k+1<len(order) else len(lines)
+for l in lines[h[17]:end]:
+    print(f"x={l['x']:.3f} y={l['y']:.3f} h={l['h']:.3f} | {l['text'][:50]!r}")
+PY
+```
+
+画像の不具合は **切り出した画像を実際に開いて見る**。OCRで中身を読ませて照合すると
+確実（`sips -Z 700 data/figures/... --out /tmp/x.png` して Read、または
+`./bin/pdfkit-tool ocr /tmp/x.png`）。
+
+### 2. 直す
+
+データ側は `tools/` を、アプリ側は `app/` を編集する。手で直せる設定は
+`tools/corrections.json`（OCRの既知の誤読）と `tools/tags.json`（分野タグ）。
+
+### 3. 作り直す
+
+```bash
+python3 tools/04_parse.py   --section am1   # 抽出を変えたとき
+python3 tools/04_parse.py   --section am2
+python3 tools/05_figures.py --section am1   # 図表の切り出しを変えたとき
+python3 tools/05_figures.py --section am2
+python3 tools/06_build.py                   # 統合（常に必要）
+python3 tools/09_duplicates.py --apply
+python3 tools/10_pack.py                    # → data/sc-data.json
+python3 tools/08_validate.py                # 全項目が ✓ になること
+```
+
+**各ステージの終了コードを必ず確認する。** 出力を `head` などで切ると SIGPIPE で
+ファイル書き込み前に落ちるのに気づけない（実際に一度やった）。
+
+### 4. アプリを変えたら Service Worker の版を上げる
+
+```bash
+# app/sw.js の VERSION を v13 → v14 のように上げる
+```
+
+**これを忘れると端末に修正が届かない。** キャッシュされた古いモジュールが動き続ける。
+
+### 5. コミットして公開
+
+```bash
+git add -A && git commit -m "…" && git push origin main
+```
+
+コミットメッセージは日本語で、**何を直したかではなく、なぜそうなっていたか**を書く。
+末尾に `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>` を付ける。
+
+GitHub Pages への反映は1〜2分。確認:
+
+```bash
+curl -s https://aoe99.github.io/sc-am2-study/app/sw.js | grep -o "sc-am2-v[0-9]*"
+```
+
+### 6. 利用者に伝えること
+
+- **データを作り直したなら**「新しい `data/sc-data.json` の読み込みが必要」と明記する。
+  ホーム画面下部と設定画面に表示される「問題データ 2026-09-04 06:18」で判別できる
+- アプリだけの変更なら読み込み直しは不要
+
+---
+
+## やってはいけないこと
+
+- **`data/` を公開しない。** IPA の問題冊子と翔泳社の解説はどちらも著作物。
+  `.gitignore` で除外済みだが、コミット前に `git diff --cached --name-only` で確認する
+- IndexedDB名 `sc-am2`、localStorageキー `sc-am2:settings`、書き出しの
+  `kind: sc-am2-progress` を変えない。**識別子であって表示名ではない。**
+  変えると読み込み済みの1,045問と学習記録が孤立する
+- サブセット実行（`--section am2 R05haru` のように回を指定）しても中間ファイルは
+  マージ書き込みになっている。全回を消さないこと
+
+---
 
 ## 残っている品質課題
 
-`data/build/review.md` の193問。大半は「選択肢が表形式（画像化済み）」と
+`data/build/review.md` に要確認179問。大半は「選択肢が表形式（画像化済み）」と
 「解説に存在しない漢字」（誤検出を半分程度含むヒント）。
 
-`data/build/cross-check.md` に**回をまたいだ不一致337箇所**。同じ問題が複数の回に
+`data/build/cross-check.md` に**回をまたいだ不一致**がある。同じ問題が複数の回に
 出ているため、抽出が食い違う箇所はどちらかが誤読。ここを潰すのが最も効率がよい。
 ただし `探索`↔`発見`、`登録`↔`記載` のように**IPAが実際に文言を変えている**ものも
 混ざるので、機械的に統一してはいけない。
 
-分野タグは22種。「その他」が114問残っており、`tools/tags.json` にキーワードを足せば減る。
+分野タグは23種。「その他」が114問残っており、`tools/tags.json` にキーワードを
+足せば減る。
 
-## 使い方
+## 未確認
 
-```bash
-python3 tools/serve.py        # → http://localhost:8765/
-```
+- iPhone 実機での「ホーム画面に追加」。表示は 375px エミュレーションで確認済み
+- Safari(mac) の実機表示
 
-または `起動.command` をダブルクリック。公開先を使うならローカルサーバは不要。
+## 今後の拡張
 
-データを作り直すとき:
-
-```bash
-./tools/run_all.sh                  # 午前I・午前II の全19回
-./tools/run_all.sh --section am1    # 午前Iだけ
-```
-
-OCRからやり直すときは `python3 tools/03_ocr.py --section am1 --force --tesseract`（約20分）。
-
-## 今後やるなら
-
-開発プロンプト §8 の拡張余地は残してある。
 - `id` は `R07aki-am1-01` の形式で区分を含むので、午後は `pm` を足せばよい
-- `meta.sections` に問数と制限時間があるので、区分を増やしても本番モードは自動で追従する
+- `meta.sections` に問数と制限時間があるので、区分を増やしても本番モードは追従する
 - 解答履歴の `mode` は自由文字列なので、新モードを足しても既存記録と衝突しない
