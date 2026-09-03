@@ -1,7 +1,7 @@
 // Offline shell only. The question data lives in IndexedDB and is never
 // cached here — it is copyrighted and must not leave the device.
 
-const VERSION = 'sc-am2-v6';
+const VERSION = 'sc-am2-v7';
 const SHELL = [
   './', './index.html', './manifest.webmanifest',
   './css/app.css',
@@ -45,11 +45,18 @@ self.addEventListener('fetch', e => {
     return;
   }
 
-  e.respondWith(caches.match(req).then(hit => hit || fetch(req).then(res => {
-    if (res.ok && res.type === 'basic') {
-      const copy = res.clone();
-      caches.open(VERSION).then(c => c.put(req, copy)).catch(() => {});
-    }
-    return res;
-  })));
+  // Network-first for the rest of the shell too. Cache-first was stranding
+  // devices on old modules: once a file was cached it was served forever, so a
+  // fix could not reach a phone until its service worker happened to update.
+  // The shell is ~180KB and the question data lives in IndexedDB, so paying a
+  // round trip when online is cheap, and the cache still answers offline.
+  e.respondWith(fetch(req)
+    .then(res => {
+      if (res.ok && res.type === 'basic') {
+        const copy = res.clone();
+        caches.open(VERSION).then(c => c.put(req, copy)).catch(() => {});
+      }
+      return res;
+    })
+    .catch(() => caches.match(req)));
 });

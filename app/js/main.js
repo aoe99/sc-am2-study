@@ -80,8 +80,18 @@ async function boot() {
   await data.load();
   await render();
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-    try { await navigator.serviceWorker.register('sw.js'); }
-    catch { /* offline support is a bonus, not a requirement */ }
+    try {
+      const reg = await navigator.serviceWorker.register('sw.js');
+      reg.update().catch(() => {});
+      let reloading = false;
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        // A newer build has taken over; reload so the page actually runs it.
+        // Not mid-exam though — losing the sitting costs more than the wait.
+        if (reloading || (ctx.run && !ctx.run.finished)) return;
+        reloading = true;
+        location.reload();
+      });
+    } catch { /* offline support is a bonus, not a requirement */ }
   }
 }
 
