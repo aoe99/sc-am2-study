@@ -180,6 +180,38 @@ def repair_dropped(pages: list[dict], pdf) -> None:
             recovered.append(f"p{pn} 『{seg}』 → …{t[max(0, ci - 10):ci]}[{seg}]{t[ci:ci + 10]}…")
 
 
+# In a four-across choice row Vision sometimes emits two cells as one
+# observation ("イEIGamal暗号 ウ RSA"). The successor marker plus the space
+# in front of it is the seam.
+MERGED = re.compile(r"^(?P<a>[アイウエ])\s*(?P<at>.{2,}?)[ 　]*(?P<b>[アイウエ])[ 　]*(?P<bt>.{2,})$")
+NEXT_KEY = {"ア": "イ", "イ": "ウ", "ウ": "エ"}
+# A split is only real if the second cell starts a word. Small kana and the
+# long-vowel mark mean the marker was the middle of one ("アクセスウィンドウ").
+NOT_A_START = "ァィゥェォッャュョヮーぁぃぅぇぉっゃゅょ"
+
+
+def split_merged(lines: list[dict]) -> list[dict]:
+    out = []
+    for l in lines:
+        t = l["text"].strip()
+        m = MERGED.match(t) if len(t) <= 64 else None
+        if (not m or NEXT_KEY.get(m.group("a")) != m.group("b")
+                or m.group("bt")[0] in NOT_A_START):
+            out.append(l)
+            continue
+        # Estimate where the second cell starts from its offset in the line.
+        cut = m.start("b") / max(1, len(t))
+        first = dict(l)
+        first["text"] = m.group("a") + m.group("at")
+        first["w"] = l["w"] * cut
+        second = dict(l)
+        second["text"] = m.group("b") + m.group("bt")
+        second["x"] = l["x"] + l["w"] * cut
+        second["w"] = l["w"] * (1 - cut)
+        out += [first, second]
+    return out
+
+
 def load(sid: str) -> list[dict]:
     pages = json.loads((build_dir(SECTION) / "ocr" / f"{sid}.json")
                        .read_text(encoding="utf-8"))
@@ -192,7 +224,7 @@ def load(sid: str) -> list[dict]:
                 continue
             out.append({"page": pi, "i": li, "text": t,
                         "x": l["x"], "y": l["y"], "w": l["w"], "h": l["h"]})
-    return out
+    return split_merged(out)
 
 
 def find_headings(lines: list[dict]) -> dict[int, int]:
@@ -359,6 +391,21 @@ def _assign_partial(block, cands, miss):
     return None
 
 
+def _widest_gap(block: list[dict]) -> int:
+    """Where the prose stops and the artwork starts: the tallest vertical hole
+    in the first part of the block."""
+    best, best_gap = len(block), 0.0
+    limit = max(2, int(len(block) * 0.7))
+    for i in range(1, limit):
+        a, b = block[i - 1], block[i]
+        if b["page"] != a["page"]:
+            continue
+        gap = b["y"] - (a["y"] + a["h"])
+        if gap > best_gap:
+            best, best_gap = i, gap
+    return best if best_gap > 0.02 else min(3, len(block))
+
+
 def split_figure(qblock: list[dict], base_x: float):
     """Peel a figure/table off the tail of the question-text lines."""
     for n, ln in enumerate(qblock):
@@ -371,8 +418,12 @@ def split_choices(block: list[dict], flags: list[str]):
     """Return (question_lines, {key: [lines]}, figure_lines)."""
     idx = find_markers(block, flags)
     if idx is None:
-        flags.append("選択肢ア〜エを特定できない")
-        return block, {}, [], [], False
+        # The choices are drawn (B+木, アローダイアグラム, ○ の表) and even the
+        # markers did not survive OCR. Keep the prose, hand the whole choice
+        # area over as one image, and let the reader pick ア〜エ from it.
+        flags.append("選択肢を特定できず、選択肢領域を丸ごと画像化")
+        cut = _widest_gap(block)
+        return block[:cut], {}, block[cut:], [], False
     qlines, figure = split_figure(block[:idx[0]], block[0]["x"])
     choices: dict[str, list[dict]] = {}
     for n, key in enumerate(CHOICE_KEYS):

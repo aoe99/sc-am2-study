@@ -36,9 +36,11 @@ def main() -> int:
 
     no_text = [q["id"] for q in qs if not q["text"].strip()]
     # A table-row choice legitimately carries an image instead of prose.
+    # A question whose options are one drawing carries them in its figure.
     no_ch = [q["id"] for q in qs
-             if len([c for c in q["choices"]
-                     if c["text"].strip() or q["choiceFigures"].get(c["key"])]) != 4]
+             if not q.get("choicesInFigure")
+             and len([c for c in q["choices"]
+                      if c["text"].strip() or q["choiceFigures"].get(c["key"])]) != 4]
     no_ans = [q["id"] for q in qs if q["answer"] not in CHOICE_KEYS]
     no_exp = [q["id"] for q in qs if not q["explanation"].strip()]
     check("全問に問題文がある", not no_text, str(no_text[:5]))

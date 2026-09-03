@@ -118,6 +118,8 @@ async function resultRow(item, run) {
     else if (c.key === item.selected) cls += ' wrong';
     const bodyNode = el('span', { class: 'body' });
     if (cf) bodyNode.append(await figureImg(cf));
+    else if (!c.text && q.choicesInFigure)
+      bodyNode.append(el('span', { class: 'muted', text: '上の図から選ぶ' }));
     else bodyNode.textContent = c.text;
     ol.append(el('li', {}, el('div', { class: cls },
       el('span', { class: 'key', text: c.key }), bodyNode)));

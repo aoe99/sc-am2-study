@@ -121,6 +121,9 @@ export default async function renderQuiz({ view, extra, go, ctx }) {
         // The choice is a table row or a 2-D formula; the scan is the choice.
         // Its OCR text is kept in the data for search but is not shown.
         bodyNode.append(await figureImg(cfig));
+      } else if (!(choice && choice.text) && q.choicesInFigure) {
+        // The four options are one drawing shown above; the buttons just pick.
+        bodyNode.append(el('span', { class: 'muted', text: '上の図から選ぶ' }));
       } else {
         bodyNode.textContent = (choice && choice.text) || '';
       }

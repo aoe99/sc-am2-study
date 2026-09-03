@@ -13,7 +13,8 @@ import difflib, json, re, subprocess, sys, tempfile
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sclib import (SECTIONS, PDFTOOL, build_dir, pdf_path, pdf_text, clean,
-                   question_count, section_of, targets_of, unwrap, write_json)
+                   question_count, read_json, section_of, targets_of, unwrap,
+                   write_json)
 
 HEAD = re.compile(r"[●○]\s*[問間]\s*(\d{1,2})\s*正解\s*[：:]\s*(ア|イ|ウ|エ)")
 # Page furniture repeated on every sheet of the 読者特典 PDFs.
@@ -130,7 +131,11 @@ def main() -> None:
         print("  *", l)
     for b in bad:
         print("  !", b)
-    write_json(build_dir(section) / "explanations.json", result)
+    # Merge, so running a single session does not wipe the other eighteen.
+    path = build_dir(section) / "explanations.json"
+    merged = read_json(path) if path.exists() else {}
+    merged.update(result)
+    write_json(path, merged)
     if bad:
         raise SystemExit(1)
 

@@ -123,7 +123,12 @@ def build(targets: list[str], sections: list[str]) -> tuple:
                 odd = odd_by_no.get(str(no))
                 if odd:
                     notes.append("解説に存在しない漢字: " + " ".join(odd))
-                if len(q["choices"]) != 4:
+                # An option is "in the drawing" when it has neither prose nor
+                # a crop of its own, but the question carries artwork.
+                blank = [k for k in CHOICE_KEYS
+                         if not q["choices"].get(k, "").strip() and k not in cfigs]
+                as_figure = bool(blank) and bool(fig.get("file"))
+                if len(q["choices"]) != 4 and not as_figure:
                     notes.append(f"選択肢が{len(q['choices'])}個")
                 if q["mentionsFigure"] and not fig.get("file"):
                     notes.append("図表に言及しているが画像なし")
@@ -141,6 +146,7 @@ def build(targets: list[str], sections: list[str]) -> tuple:
                     "choiceFigures": cfigs,
                     "tags": tags_for(q["text"] + "\n" + ex["explanation"]),
                     "duplicateGroupId": None,
+                    "choicesInFigure": as_figure,
                     "needsReview": bool(notes),
                     "shortText": len(q["text"]) < 100,
                     "source": {
