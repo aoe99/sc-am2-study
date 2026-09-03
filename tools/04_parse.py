@@ -70,7 +70,8 @@ def rejoin_split_words(s: str) -> str:
 # サーバ…" → 問181台) that no digit boundary can be trusted here; capture the
 # whole run and let the 1..25 sequence decide where the number ends.
 HEAD = re.compile(r"^[問間]\s*(\d{1,3})")
-PAGE_NO = re.compile(r"^[\s\-–—ー−=_]*\d{1,3}[\s\-–—ー−=_]*$")
+# "− 12 −" and also the bare rules left when the digits are not recognised.
+PAGE_NO = re.compile(r"^[\s\-–—ー−=_]*\d{1,3}[\s\-–—ー−=_]*$|^[\s\-–—ー−=_･・.,]+$")
 # Vision confuses these with the choice markers: エ/工 (katakana vs kanji) and
 # イ/1 are the two that actually bite.
 ALIAS = {"ア": "アァ", "イ": "イィ1lＩ", "ウ": "ウゥワヮ", "エ": "エェ工ヱ"}
@@ -474,8 +475,16 @@ def split_choices(block: list[dict], flags: list[str], inferred: set):
         stop = idx[n + 1] if n + 1 < len(idx) else len(block)
         body = [block[start]]
         for j in range(start + 1, stop):
-            if block[j]["x"] >= block[start]["x"] - 0.012:
-                body.append(block[j])
+            ln = block[j]
+            if ln["x"] < block[start]["x"] - 0.012:
+                continue
+            # Stop at a jump too large to be the next line of the same answer:
+            # the page number at the foot of the sheet is indented like a
+            # continuation and would otherwise be swallowed by 選択肢エ.
+            prev = body[-1]
+            if ln["page"] == prev["page"] and ln["y"] - (prev["y"] + prev["h"]) > 0.08:
+                break
+            body.append(ln)
         choices[key] = body
     used = {id(l) for ls in choices.values() for l in ls}
     used |= {id(l) for l in qlines} | {id(l) for l in figure}

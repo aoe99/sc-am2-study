@@ -79,6 +79,14 @@ export default async function renderHome({ view, extra, go }) {
       answers.length ? el('p', { class: 'muted', style: 'margin:2px 0 0' },
         `最終学習: ${fmtDate(Math.max(...answers.map(a => a.answeredAt)))}`) : null),
   );
+
+  // The build stamp of the loaded pack. Keeping it in sight is what tells a
+  // stale import apart from a bug in the extraction.
+  const meta = data.meta();
+  if (meta && meta.generatedAt) {
+    view.append(el('p', { class: 'muted', style: 'text-align:center;font-size:.76rem' },
+      `問題データ ${String(meta.generatedAt).replace('T', ' ').slice(0, 16)}`));
+  }
 }
 
 const stat = (value, label) =>
