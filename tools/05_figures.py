@@ -19,14 +19,19 @@ FIGDIR = DATA / "figures"
 # OCR boxes sit inside the cell borders, so the pad has to clear the rules
 # of a table as well as the glyphs.
 PAD_X, PAD_Y = 0.08, 0.018
+# A band shorter than one printed line above the first choice is not a header.
+MIN_HEADER = 0.02
 # Artwork often runs wider than the text column, so allow more margin
 # than the prose uses before clamping.
 MIN_X, MAX_X = 0.035, 0.965
 
 
-def region(q: dict) -> tuple[int, float, float, float, float] | None:
+def region(q: dict, with_choices: bool = False) -> tuple[int, float, float, float, float] | None:
     boxes = [(l["page"], l["x"], l["y"], l["x"] + l["w"], l["y"] + l["h"])
              for l in q["figureLines"]]
+    if with_choices:
+        boxes += [(b["page"], b["x"], b["y"], b["x"] + b["w"], b["y"] + b["h"])
+                  for v in q["choiceBoxes"].values() for b in v]
     for pg, top, bot in q["holes"]:
         boxes.append((pg, MIN_X, top, MAX_X, bot))
     if not boxes:
@@ -108,20 +113,24 @@ def choice_rows(q: dict) -> dict:
                 tightened.append((lo, hi))
             ybands = tightened
 
+    spread = [b for k in keys for b in q["choiceBoxes"].get(k, []) if b["page"] == page]
+    spread += [marks[k] for k in keys]
+    spread += [l for l in q["figureLines"] if l["page"] == page]
+    table_x = ((max(MIN_X, min(b["x"] for b in spread) - 0.02),
+                min(MAX_X, max(b["x"] + b["w"] for b in spread) + 0.02))
+               if spread else (MIN_X, MAX_X))
+
     out = {}
     for row, (top, bot) in zip(rows, ybands):
         ordered = sorted(row, key=lambda k: pos[k][0])
         xs = [pos[k][0] for k in ordered]
         if len(ordered) == 1:
-            # One choice per row: trim to what the row actually spans, so a
-            # table row is not padded out to the full text column.
-            rb = row_boxes(row)
-            if rb:
-                left = min([b["x"] for b in rb] + [pos[ordered[0]][0]]) - 0.02
-                right = max(b["x"] + b["w"] for b in rb) + 0.02
-                xbands = [(max(MIN_X, left), min(MAX_X, right))]
-            else:
-                xbands = [(MIN_X, MAX_X)]
+            # One choice per row. A row's own right-hand cells are often
+            # absorbed into a neighbouring choice by reading order, so the
+            # width comes from every row together — collectively they do cover
+            # the table, and a narrow table stays readable instead of being
+            # padded out to the full page.
+            xbands = [table_x]
         else:
             span = min(b - a for a, b in zip(xs, xs[1:]))
             # Start each crop just left of its own marker, not halfway back,
@@ -130,7 +139,9 @@ def choice_rows(q: dict) -> dict:
             xbands.append((xs[-1] - 0.014, min(MAX_X, xs[-1] + span)))
         for k, (left, right) in zip(ordered, xbands):
             x0, y0 = max(0.0, left), max(0.0, top - 0.004)
-            x1, y1 = min(1.0, right), min(1.0, bot + 0.004)
+            # The band already stops at the midpoint to the next row; padding it
+            # further only lets the following row peek in under the crop.
+            x1, y1 = min(1.0, right), min(1.0, bot)
             if x1 - x0 <= 0.01 or y1 - y0 <= 0.005:
                 return {}
             out[k] = (page, x0, y0, x1 - x0, y1 - y0)
@@ -147,15 +158,27 @@ def main() -> None:
         outdir = FIGDIR / sid
         made = 0
         for q in parsed[sid]:
-            r = region(q)
+            rows = choice_rows(q) if q.get("tableChoices") else {}
+            # The choices are drawn but their rows could not be delimited, so no
+            # per-choice crop will exist. One image has to carry all four, or the
+            # question cannot be answered at all.
+            whole = bool(q.get("tableChoices")) and not rows
+            r = region(q, with_choices=whole)
             if r is None:
                 continue
             page, x, y, w, h = r
-            rows = choice_rows(q) if q.get("tableChoices") else {}
             if rows:
-                first = min(v[2] for v in rows.values())
-                if page == next(iter(rows.values()))[0] and first > y:
-                    h = min(h, first - y)          # header only; rows are cropped below
+                # Whatever sits inside the choice band is part of a choice, not
+                # a separate exhibit: a stray "m" from the denominator of 選択肢ア
+                # must not be published again as the question's own figure.
+                on_page = [v for v in rows.values() if v[0] == page]
+                first = min((v[2] for v in on_page), default=None)
+                if first is None:
+                    pass                          # rows live elsewhere; keep as is
+                elif first - y < MIN_HEADER:
+                    continue                      # nothing above the choices
+                else:
+                    h = min(h, first - y)         # header only; rows crop below
             outdir.mkdir(parents=True, exist_ok=True)
             name = f"{sid}-{section}-{q['no']:02d}.png"
             run_tool("crop", pdf, page, f"{x:.5f}", f"{y:.5f}",
@@ -183,7 +206,11 @@ def main() -> None:
                 entry["choiceFigures"][key] = f"figures/{sid}/{name}"
             tables += 1
         print(f"{sid:9} 図表 {made} 件  表形式選択肢 {tables} 問")
-    write_json(build_dir(section) / "figures.json", index)
+    # Merge, so running a single session does not wipe the other eighteen.
+    path = build_dir(section) / "figures.json"
+    merged = read_json(path) if path.exists() else {}
+    merged.update(index)
+    write_json(path, merged)
 
 
 if __name__ == "__main__":

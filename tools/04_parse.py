@@ -14,7 +14,8 @@ import difflib, json, re, sys, unicodedata
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sclib import (CHOICE_KEYS, SECTIONS, PDFTOOL, build_dir, clean, pdf_path,
-                   question_count, run_tool, section_of, targets_of, write_json)
+                   question_count, read_json, run_tool, section_of, targets_of,
+                   write_json)
 import tempfile
 
 SECTION = section_of(sys.argv[1:])
@@ -73,14 +74,23 @@ PAGE_NO = re.compile(r"^[\s\-–—ー−=_]*\d{1,3}[\s\-–—ー−=_]*$")
 # Vision confuses these with the choice markers: エ/工 (katakana vs kanji) and
 # イ/1 are the two that actually bite.
 ALIAS = {"ア": "アァ", "イ": "イィ1lＩ", "ウ": "ウゥワヮ", "エ": "エェ工ヱ"}
+# "1"/"l" stand in for イ only as a last resort. A four-across row of binary
+# strings ("ア0110011  ィ  1010011 …") offers the digit as a rival marker, and
+# taking it would eat the first bit of the answer.
+STRONG = {"ア": "アァ", "イ": "イィ", "ウ": "ウゥワヮ", "エ": "エェ工ヱ"}
 # Figure and table blocks are introduced by a bracketed caption when they have one.
 CAPTION = re.compile(r"^[〔［【\[（(]")
+ENDS_SENTENCE = re.compile(r"[。．！？]\s*$")
 # "図" and "表" occur inside ordinary words (地図, 発表, 表示); only count them
 # when the sentence is pointing at an actual exhibit.
 FIGREF = re.compile(r"(?:次の[図表]|[下上左右本]図|図中|(?<![地海系意合構星版縮])図[のにはを]|[図表]\s?\d"
                     r"|[下上]表|表中|(?<![発公代年別])表[のにはを]|〔[^〕]*〕|次に示す)")
 
 CJK = r"　-〿぀-ヿ㐀-䶿一-鿿＀-￯"
+
+# Letters, digits and Japanese are content; anything else at the head of a
+# choice whose marker was inferred is OCR debris.
+KEEPS_FIRST = re.compile(rf"[0-9A-Za-z{CJK}]")
 
 
 def norm(s: str) -> str:
@@ -290,11 +300,17 @@ def find_headings(lines: list[dict]) -> dict[int, int]:
     return best
 
 
-def _marker(line: dict, key: str) -> bool:
+def _marker(line: dict, key: str, table=None) -> bool:
     """Does this line open a choice?  Bare markers count: when the choices are
     laid out as a table the ア sits alone in its own cell."""
     t = line["text"].strip()
-    return bool(t) and t[0] in ALIAS[key]
+    return bool(t) and t[0] in (table or ALIAS)[key]
+
+
+def _multicolumn(body: list[dict]) -> bool:
+    """Does this choice's text sit in two separate columns of a table?"""
+    xs = [l["x"] for l in body[1:]]
+    return bool(xs) and max(xs) - min(xs) > 0.15
 
 
 def _bare(line: dict) -> bool:
@@ -327,7 +343,7 @@ def _assign(block: list[dict], cands: dict[str, list[int]]) -> list[int] | None:
     return None
 
 
-def find_markers(block: list[dict], flags: list[str]) -> list[int] | None:
+def find_markers(block: list[dict], flags: list[str], inferred: set) -> list[int] | None:
     """Indices of the ア/イ/ウ/エ markers.
 
     Both a wrapped choice ("…マルウェ" / "ア感染を検知する。") and a figure label
@@ -335,12 +351,19 @@ def find_markers(block: list[dict], flags: list[str]) -> list[int] | None:
     candidates are searched as a whole assignment and kept only when the four
     line up in a column — or in a proper multi-column row.
     """
-    cands = {k: [j for j in range(1, len(block)) if _marker(block[j], k)]
-             for k in CHOICE_KEYS}
-    if all(cands.values()):
-        got = _assign(block, cands)
-        if got:
-            return got
+    def candidates(table):
+        return {k: [j for j in range(1, len(block)) if _marker(block[j], k, table)]
+                for k in CHOICE_KEYS}
+
+    # Real marker glyphs win over the digit stand-ins; only fall back if the
+    # strict reading cannot produce a consistent set of four.
+    cands = candidates(ALIAS)
+    for table in (STRONG, ALIAS):
+        strict = candidates(table)
+        if all(strict.values()):
+            got = _assign(block, strict)
+            if got:
+                return got
 
     # Vision sometimes drops the marker glyph itself, leaving the choice text
     # starting one full-width character further in than a wrapped line would.
@@ -351,6 +374,7 @@ def find_markers(block: list[dict], flags: list[str]) -> list[int] | None:
         partial = _assign_partial(block, cands, miss)
         if partial:
             flags.append(f"選択肢{miss}のマーカーが読めず位置から補完")
+            inferred.add(miss)
             return partial
     return None
 
@@ -407,16 +431,35 @@ def _widest_gap(block: list[dict]) -> int:
 
 
 def split_figure(qblock: list[dict], base_x: float):
-    """Peel a figure/table off the tail of the question-text lines."""
-    for n, ln in enumerate(qblock):
-        if n and (ln["x"] > base_x + 0.15 or CAPTION.match(ln["text"])):
+    """Peel a figure/table off the tail of the question-text lines.
+
+    Two things mark the boundary, and whichever comes first wins: a line
+    indented far past the prose column, or — once the prose has finished — one
+    or two characters set at a different indent. The latter is a column label
+    of the table below ("a b c d") or the numerator of 選択肢ア's fraction, and
+    it always precedes the wide line that gives the artwork away.
+    """
+    for n in range(1, len(qblock)):
+        prev, ln = qblock[n - 1], qblock[n]
+        t = ln["text"].strip()
+        if ln["x"] > base_x + 0.15 or CAPTION.match(ln["text"]):
+            # The wide line may be the second cell of a header row whose first
+            # cell is barely indented ("第1正規形 | 第2正規形 | …"). Back up over
+            # anything sharing its baseline so the row is not cut in half.
+            while (n > 1 and qblock[n - 1]["page"] == ln["page"]
+                   and abs(qblock[n - 1]["y"] - ln["y"]) <= max(ln["h"], 0.008)):
+                n -= 1
+            return qblock[:n], qblock[n:]
+        if (len(t) <= 2 and not ENDS_SENTENCE.search(t)
+                and ENDS_SENTENCE.search(prev["text"])
+                and abs(ln["x"] - prev["x"]) > 0.03):
             return qblock[:n], qblock[n:]
     return qblock, []
 
 
-def split_choices(block: list[dict], flags: list[str]):
+def split_choices(block: list[dict], flags: list[str], inferred: set):
     """Return (question_lines, {key: [lines]}, figure_lines)."""
-    idx = find_markers(block, flags)
+    idx = find_markers(block, flags, inferred)
     if idx is None:
         # The choices are drawn (B+木, アローダイアグラム, ○ の表) and even the
         # markers did not survive OCR. Keep the prose, hand the whole choice
@@ -489,14 +532,43 @@ def parse(sid: str) -> list[dict]:
         stripped = dict(block[0])
         stripped["text"] = re.sub(rf"^[問間]\s*{no}\s*", "", block[0]["text"], count=1)
         block = [stripped] + block[1:]
-        qlines, choices, figure, trailing, interleaved = split_choices(block, flags)
-        # Bare markers mean a table; artwork between the markers means the
-        # choices themselves are drawn (2-D formulas, diagrams).
-        table_choices = bool(choices) and (
-            interleaved or any(_bare(v[0]) for v in choices.values()))
+        inferred: set = set()
+        qlines, choices, figure, trailing, interleaved = split_choices(
+            block, flags, inferred)
+        # Artwork between the markers means the choices themselves are drawn.
+        # A bare marker on its own proves nothing — OCR splits one off in an
+        # ordinary four-across row too — so it only counts when the text that
+        # came out is unusable: empty, or a table row whose cells collapsed
+        # into one string with the columns lost.
+        def body_text(key, v):
+            raw = join(v)
+            if key not in inferred:
+                raw = raw[1:]                     # the marker was read; drop it
+            elif raw[:1] and (raw[0] in ALIAS[key] or not KEEPS_FIRST.match(raw[0])):
+                # The marker was recovered from position, so the text may or may
+                # not still carry a glyph for it. Cut only a marker or a stray
+                # symbol — a letter or digit there is the answer ("Java").
+                raw = raw[1:]
+            return norm(raw.lstrip(" 　"))
+
+        bare = bool(choices) and any(_bare(v[0]) for v in choices.values())
+        blank = [k for k, v in choices.items() if not body_text(k, v)]
+        broken = bool(blank) or any(_multicolumn(v) for v in choices.values())
+        table_choices = bool(choices) and (interleaved or (bare and broken))
+        if blank and not table_choices:
+            # An option came out empty and there are no per-choice crops, so the
+            # reader has to work from the scan. Widen the figure to the whole
+            # choice area — a crop that stops after 選択肢ア is unanswerable.
+            seen = {id(l) for l in figure}
+            figure = figure + [l for k in CHOICE_KEYS for l in choices.get(k, [])
+                               if id(l) not in seen]
 
         text = join(qlines)
-        ch = {key: norm(join(v)[1:].lstrip(" 　")) for key, v in choices.items()} if choices else {}
+        # Strip the marker glyph only where one was actually read: a marker
+        # recovered from position never appeared in the text, so cutting a
+        # character there would eat the answer ("Java" → "ava").
+        ch = ({key: body_text(key, v) for key, v in choices.items()}
+              if choices else {})
         if choices and any(not v for v in ch.values()):
             flags.append("空の選択肢がある")
         if table_choices:
@@ -561,7 +633,11 @@ def main() -> None:
         print("\n補正辞書の適用:")
         for why, n in sorted(applied.items(), key=lambda kv: -kv[1]):
             print(f"  {n:3} 件  {why}")
-    write_json(build_dir(SECTION) / "parsed.json", result)
+    # Merge, so running a single session does not wipe the other eighteen.
+    path = build_dir(SECTION) / "parsed.json"
+    merged = read_json(path) if path.exists() else {}
+    merged.update(result)
+    write_json(path, merged)
 
 
 if __name__ == "__main__":
