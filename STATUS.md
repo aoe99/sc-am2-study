@@ -32,14 +32,19 @@
   「解答時は ウ」と併記
 - iPhone(375px) でのレイアウトを確認済み
 
+## 公開先
+
+**https://aoe99.github.io/sc-am2-study/app/**（GitHub Pages / main ブランチのルート）
+
+Service Worker の登録・activated と、シェル21ファイルのキャッシュを HTTPS 上で
+確認済み。ローカルの `http://localhost` では登録できなかったが、これは検証に
+使った埋め込みブラウザ側の制限だった。
+
 ## 未確認
 
-- **Service Worker（オフライン動作・ホーム画面追加）を実機で確認していない。**
-  検証に使った埋め込みブラウザが Service Worker の登録を拒否するため
-  （`sw.js` は 200・MIME も secure context も正常、"unknown error" で失敗）。
-  シェル21ファイルはすべて取得できることを確認済みなので、コード側の問題では
-  ないと考えているが、**実機の Safari / Chrome での確認が必要**。
-- Chrome / Safari(mac) / Safari(iOS) の実機表示。検証は埋め込み Chromium のみ。
+- **iPhone 実機**での表示と「ホーム画面に追加」。検証は埋め込み Chromium の
+  375px エミュレーションのみ。
+- Safari(mac) / Safari(iOS) の実機表示。
 
 ## 残っている品質課題
 

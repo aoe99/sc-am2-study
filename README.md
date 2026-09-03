@@ -139,11 +139,21 @@ tesseract のほうが正しく読む字もある（`危殆化` など）ので�
 
 `app/` がアプリ本体。ビルド工程はなく、HTML + CSS + ES modules だけで動く。
 
-### 起動
+### 公開先
+
+**https://aoe99.github.io/sc-am2-study/app/**
+
+Service Worker がアプリ本体（21ファイル）をキャッシュするので、一度開けば
+オフラインで動く。iPhone は共有 →「ホーム画面に追加」。
+
+### ローカルで動かす
 
 ```bash
 python3 tools/serve.py        # → http://localhost:8765/
 ```
+
+または `起動.command` をダブルクリック。インターネットは不要
+（127.0.0.1 にしか listen しない）。
 
 初回に「ファイルを選ぶ」から `data/sc-data.json` を読み込む。以降は IndexedDB
 から読むので、オフラインでも動く。

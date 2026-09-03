@@ -1,7 +1,7 @@
 // Offline shell only. The question data lives in IndexedDB and is never
 // cached here — it is copyrighted and must not leave the device.
 
-const VERSION = 'sc-am2-v1';
+const VERSION = 'sc-am2-v2';
 const SHELL = [
   './', './index.html', './manifest.webmanifest',
   './css/app.css',
@@ -11,6 +11,7 @@ const SHELL = [
   './js/views/result.js', './js/views/stats.js', './js/views/settings.js',
   './js/views/import.js',
   './icons/icon-180.png', './icons/icon-192.png', './icons/icon-512.png',
+  './icons/icon-512-maskable.png',
 ];
 
 self.addEventListener('install', e => {
