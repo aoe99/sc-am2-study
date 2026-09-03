@@ -119,33 +119,30 @@ def choice_rows(q: dict) -> dict:
             # inside the taller row and clips its first line. Cut instead at the
             # widest blank band between the two markers, which is the rule the
             # printed table is drawn on.
-            edges = []
-            for a, b in zip(ys, ys[1:]):
-                between = [c for c in content if a < c["y"] + c["h"] / 2 < b]
-                best, best_gap = (a + b) / 2, -1.0
-                for lo_box, hi_box in zip(between, between[1:]):
-                    space = hi_box["y"] - (lo_box["y"] + lo_box["h"])
-                    if space > best_gap:
-                        best_gap, best = space, (lo_box["y"] + lo_box["h"] + hi_box["y"]) / 2
-                edges.append(best)
-            def outer_edge(boxes, fallback):
-                """Blank band separating this row from the header above it."""
-                boxes = sorted(boxes, key=lambda b: b["y"])
-                if not boxes:
-                    return fallback
-                best, best_gap = boxes[0]["y"] - 0.008, 0.0
-                for lo_box, hi_box in zip(boxes, boxes[1:]):
-                    space = hi_box["y"] - (lo_box["y"] + lo_box["h"])
-                    if space > best_gap and space > 0.004:
-                        best_gap = space
-                        best = (lo_box["y"] + lo_box["h"] + hi_box["y"]) / 2
+            def blank_band(a: float, b: float, fallback: float) -> float:
+                """The widest strip between a and b that no line box covers.
+
+                Which line belongs to which row is exactly what is unknown here,
+                so nothing is grouped: the boxes are treated as occupied
+                intervals and the emptiest place between the two markers is the
+                rule the printed table is drawn on. Picking by ownership
+                misfires when a marker box sits a hair lower than the text it
+                labels, and the boundary then lands inside the next row.
+                """
+                spans = sorted((c["y"], c["y"] + c["h"]) for c in content
+                               if c["y"] + c["h"] > a and c["y"] < b)
+                cursor, best, widest = a, fallback, -1.0
+                for lo, hi in spans:
+                    if lo - cursor > widest:
+                        widest, best = lo - cursor, (cursor + lo) / 2
+                    cursor = max(cursor, hi)
+                if b - cursor > widest:
+                    best = (cursor + b) / 2
                 return best
 
-            head = edges[0] if edges else ys[-1] + gap
-            tail = edges[-1] if edges else ys[0] - gap
-            top0 = outer_edge([c for c in content if c["y"] + c["h"] / 2 < head],
-                              ys[0] - gap / 2)
-            below = [c for c in content if c["y"] + c["h"] / 2 > tail]
+            edges = [blank_band(a, b, (a + b) / 2) for a, b in zip(ys, ys[1:])]
+            top0 = blank_band(ys[0] - gap, ys[0], ys[0] - gap / 2)
+            below = [c for c in content if c["y"] > (edges[-1] if edges else ys[-1])]
             last = max([c["y"] + c["h"] for c in below] or [ys[-1]])
             ybands = list(zip([top0] + edges, edges + [last + 0.008]))
 
