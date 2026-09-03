@@ -102,13 +102,19 @@ async function doExport() {
 
 async function dataCard(go) {
   const meta = data.meta();
+  // The pack's own build time, not the import time: when a fix has been made
+  // to the data, this is the only way to tell which version is actually loaded.
+  const built = meta && meta.generatedAt
+    ? String(meta.generatedAt).replace('T', ' ').slice(0, 16) : null;
   return card('問題データ',
     el('p', { class: 'muted', style: 'margin-top:0' },
       data.isLoaded()
         ? `${data.questions().length} 問 / ${data.sessions().length} 回`
-          + (meta && meta.importedAt ? `（${fmtDate(meta.importedAt)} 読み込み）` : '')
           + (meta && meta.assetCount ? ` / 図表 ${meta.assetCount} 枚` : '')
         : '未読み込み'),
+    data.isLoaded() ? el('p', { class: 'muted', style: 'margin:0 0 10px' },
+      (built ? `データ作成 ${built}` : '')
+      + (meta && meta.importedAt ? `  /  読み込み ${fmtDate(meta.importedAt)}` : '')) : null,
     el('div', { class: 'row' },
       el('button', { onclick: () => go('import') }, '読み込み / 入れ替え'),
       el('button', {

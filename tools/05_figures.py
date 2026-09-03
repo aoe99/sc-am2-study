@@ -95,6 +95,10 @@ def choice_rows(q: dict) -> dict:
         ybands = [(top, bot)]
     else:
         gap = min(b - a for a, b in zip(ys, ys[1:]))
+        content = sorted(
+            ([b for k in keys for b in q["choiceBoxes"].get(k, []) if b["page"] == page]
+             + [l for l in q["figureLines"] if l["page"] == page]),
+            key=lambda b: b["y"])
         if gap > 0.10:
             # Tall cells: the marker labels the top-left of a drawing, so each
             # band runs from its own marker down to the next one. Splitting at
@@ -102,16 +106,41 @@ def choice_rows(q: dict) -> dict:
             ybands = [(a - 0.014, b - 0.014) for a, b in zip(ys, ys[1:])]
             ybands.append((ys[-1] - 0.014, min(1.0, ys[-1] + gap - 0.014)))
         else:
-            # Short rows of a table: the marker is centred in its row.
-            ybands = _bands(ys, gap / 2, gap / 2)
-            tightened = []
-            for row, (lo, hi) in zip(rows, ybands):
-                rb = row_boxes(row)
-                if rb:
-                    mark_top = min(marks[k]["y"] for k in row)
-                    lo = max(lo, min([b["y"] for b in rb] + [mark_top]) - 0.012)
-                tightened.append((lo, hi))
-            ybands = tightened
+            # Short rows of a table. The marker is centred in its row, but the
+            # rows are not the same height — 選択肢エ may run to four lines while
+            # 選択肢イ is one — so halving the distance between two markers lands
+            # inside the taller row and clips its first line. Cut instead at the
+            # widest blank band between the two markers, which is the rule the
+            # printed table is drawn on.
+            edges = []
+            for a, b in zip(ys, ys[1:]):
+                between = [c for c in content if a < c["y"] + c["h"] / 2 < b]
+                best, best_gap = (a + b) / 2, -1.0
+                for lo_box, hi_box in zip(between, between[1:]):
+                    space = hi_box["y"] - (lo_box["y"] + lo_box["h"])
+                    if space > best_gap:
+                        best_gap, best = space, (lo_box["y"] + lo_box["h"] + hi_box["y"]) / 2
+                edges.append(best)
+            def outer_edge(boxes, fallback):
+                """Blank band separating this row from the header above it."""
+                boxes = sorted(boxes, key=lambda b: b["y"])
+                if not boxes:
+                    return fallback
+                best, best_gap = boxes[0]["y"] - 0.008, 0.0
+                for lo_box, hi_box in zip(boxes, boxes[1:]):
+                    space = hi_box["y"] - (lo_box["y"] + lo_box["h"])
+                    if space > best_gap and space > 0.004:
+                        best_gap = space
+                        best = (lo_box["y"] + lo_box["h"] + hi_box["y"]) / 2
+                return best
+
+            head = edges[0] if edges else ys[-1] + gap
+            tail = edges[-1] if edges else ys[0] - gap
+            top0 = outer_edge([c for c in content if c["y"] + c["h"] / 2 < head],
+                              ys[0] - gap / 2)
+            below = [c for c in content if c["y"] + c["h"] / 2 > tail]
+            last = max([c["y"] + c["h"] for c in below] or [ys[-1]])
+            ybands = list(zip([top0] + edges, edges + [last + 0.008]))
 
     spread = [b for k in keys for b in q["choiceBoxes"].get(k, []) if b["page"] == page]
     spread += [marks[k] for k in keys]
