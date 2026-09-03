@@ -3,6 +3,8 @@
 // The question data is copyrighted, so it never ships with the app: it is
 // imported once from a file the user picks and lives only in this browser.
 
+// The store name is an identity, not a label: renaming it when the app was
+// renamed would strand every imported question and every answer already saved.
 const DB_NAME = 'sc-am2';
 const DB_VERSION = 1;
 

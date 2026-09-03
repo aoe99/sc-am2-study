@@ -118,9 +118,9 @@ func makeIcon(size: Int, out: String, maskable: Bool) {
     title.draw(at: CGPoint(x: box.midX - sz.width / 2,
                            y: box.midY - sz.height / 2 + box.width * 0.06),
                withAttributes: attrs)
-    let sub = "午前II" as NSString
+    let sub = "試験対策" as NSString
     let sattrs: [NSAttributedString.Key: Any] = [
-        .font: NSFont.systemFont(ofSize: box.width * 0.15, weight: .semibold),
+        .font: NSFont.systemFont(ofSize: box.width * 0.135, weight: .semibold),
         .foregroundColor: NSColor(white: 1, alpha: 0.85),
     ]
     let ssz = sub.size(withAttributes: sattrs)

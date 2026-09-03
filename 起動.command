@@ -13,6 +13,6 @@ if ! curl -s -o /dev/null "http://127.0.0.1:$PORT/index.html"; then
 fi
 
 open "http://localhost:$PORT/"
-echo "SC 午前II を http://localhost:$PORT/ で開きました。"
+echo "SC試験対策 を http://localhost:$PORT/ で開きました。"
 echo "このウィンドウを閉じてもアプリは動き続けます。"
 echo "止めるには:  pkill -f tools/serve.py"

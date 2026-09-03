@@ -91,7 +91,7 @@ async function doExport() {
   const payload = await data.exportProgress(settings.all());
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
-  const name = `sc-am2-progress-${new Date().toISOString().slice(0, 10)}.json`;
+  const name = `sc-shiken-progress-${new Date().toISOString().slice(0, 10)}.json`;
   const a = el('a', { href: url, download: name });
   document.body.append(a);
   a.click();

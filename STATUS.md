@@ -30,7 +30,7 @@
 - 単一ファイル `data/sc-data.json`（約19MB、図表540枚を内蔵）をファイル選択で読み込み
   → IndexedDB。実測 **1,045問・540図表を330ms**、ヒープ55MB
 - 学習記録の書き出し／読み込みは往復検証済み
-- **公開先: https://aoe99.github.io/sc-am2-study/app/**
+- **公開先: https://aoe99.github.io/sc-am2-study/app/**（アプリ名: SC試験対策）
   Service Worker の登録・activated とシェル22ファイルのキャッシュを HTTPS 上で確認済み
 
 ## 未確認
