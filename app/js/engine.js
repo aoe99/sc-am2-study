@@ -99,7 +99,9 @@ export function grade(run, item, key, prevState) {
   const q = data.byId(item.id);
   item.selected = key;
   item.correct = key === q.answer;
-  item.elapsedMs = item.shownAt ? Date.now() - item.shownAt : 0;
+  // A paper graded at the end already timed each answer as it was given;
+  // measuring again here would bill the whole rest of the sitting to it.
+  if (!item.elapsedMs) item.elapsedMs = item.shownAt ? Date.now() - item.shownAt : 0;
   const next = leitner.advance(prevState || leitner.blank(item.id), item.correct);
   return {
     state: next,

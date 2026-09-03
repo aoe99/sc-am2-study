@@ -213,11 +213,37 @@ ol.choices li { margin: 0; }
 
 .navbar {
   position: sticky; bottom: 0;
-  display: flex; gap: 10px; align-items: center;
+  display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
   padding: 10px 0 max(10px, env(safe-area-inset-bottom));
   background: linear-gradient(to top, var(--bg) 72%, transparent);
 }
 .navbar .spacer { flex: 1; }
+
+/* Question navigator: which numbers are still blank, and jump to one. */
+.qnav-panel {
+  flex: 1 0 100%;
+  padding: 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.qnav {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(44px, 1fr));
+  gap: 8px;
+}
+.qnav-cell {
+  min-width: 0; min-height: var(--tap); padding: 4px;
+  font-variant-numeric: tabular-nums; font-weight: 600;
+  color: var(--fg-dim); background: var(--surface-2);
+  border: 1px solid transparent; border-radius: 8px;
+}
+.qnav-cell.done { color: var(--fg); background: color-mix(in srgb, var(--accent) 22%, transparent); }
+.qnav-cell.flagged { border-color: var(--warn); }
+.qnav-cell.here { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.flagbtn { float: right; margin-left: 8px; font-size: .82rem; }
+.flagbtn[aria-pressed='true'] { color: var(--warn); border-color: var(--warn); }
 
 /* --- overlays ------------------------------------------------------------ */
 

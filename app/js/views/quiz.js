@@ -18,6 +18,13 @@ export default async function renderQuiz({ view, extra, go, ctx }) {
   view.append(body, nav);
 
   let timerId = null;
+  let showNav = false;
+  let viewing = -1;      // which question the clock below is running against
+  // Papers that are graded at the end are answered the way the real exam is:
+  // skip what you cannot do, come back to it. That only works if you can see
+  // at a glance which numbers are still blank.
+  const useNav = run.grading === 'end' && run.items.length > 5;
+
   if (run.deadline) {
     const clock = el('span', { class: 'timer' });
     extra.append(clock);
@@ -43,14 +50,22 @@ export default async function renderQuiz({ view, extra, go, ctx }) {
   }
 
   async function choose(item, key) {
-    if (item.selected !== null && run.grading === 'immediate') return;
+    if (run.grading === 'end') {
+      // The answer can still be changed until the paper is handed in, so
+      // nothing is written yet: recording here would count every revision as
+      // an attempt and move the Leitner box more than once. The result screen
+      // settles the whole run in one pass.
+      item.selected = key;
+      item.elapsedMs = item.shownAt ? Date.now() - item.shownAt : 0;
+      draw();
+      return;
+    }
+    if (item.selected !== null) return;
     const prev = states.get(item.id);
     const { state, answer } = engine.grade(run, item, key, prev);
     states.set(item.id, state);
-    if (run.mode !== 'exam' || true) {
-      await data.putState(state);
-      await data.addAnswer(answer);
-    }
+    await data.putState(state);
+    await data.addAnswer(answer);
     draw();
   }
 
@@ -61,6 +76,39 @@ export default async function renderQuiz({ view, extra, go, ctx }) {
 
   function prev() {
     if (run.index > 0) { run.index -= 1; draw(); }
+  }
+
+  function jump(i) {
+    if (i >= 0 && i < run.items.length) { run.index = i; showNav = false; draw(); }
+  }
+
+  function navPanel() {
+    const grid = el('div', { class: 'qnav' });
+    run.items.forEach((it, i) => {
+      const cls = ['qnav-cell'];
+      if (it.selected !== null) cls.push('done');
+      if (it.flagged) cls.push('flagged');
+      if (i === run.index) cls.push('here');
+      grid.append(el('button', {
+        class: cls.join(' '),
+        onclick: () => jump(i),
+        'aria-current': i === run.index ? 'true' : null,
+        'aria-label': `問${i + 1} ${it.selected !== null ? '解答済み' : '未解答'}`
+                      + (it.flagged ? ' 見直し' : ''),
+      }, String(i + 1)));
+    });
+    const left = run.items.length - engine.answeredCount(run);
+    return el('div', { class: 'qnav-panel' },
+      grid,
+      el('div', { class: 'row', style: 'margin-top:12px' },
+        el('span', { class: 'muted', text: left ? `未解答 ${left}問` : '全問解答済み' }),
+        el('span', { class: 'spacer' }),
+        el('button', {
+          class: left ? '' : 'primary',
+          onclick: () => {
+            if (!left || confirm(`未解答が ${left}問 あります。採点しますか？`)) finish();
+          },
+        }, '解答を終了する')));
   }
 
   function finish() {
@@ -76,7 +124,10 @@ export default async function renderQuiz({ view, extra, go, ctx }) {
   async function draw() {
     const item = run.items[run.index];
     const q = data.byId(item.id);
-    if (!item.shownAt) item.shownAt = Date.now();
+    // Restart the per-question clock on arrival, not on every re-render: with
+    // free navigation a single shownAt would bill time spent elsewhere to
+    // whichever question happened to be open first.
+    if (viewing !== run.index) { viewing = run.index; item.shownAt = Date.now(); }
     clear(body);
     clear(nav);
 
@@ -91,6 +142,12 @@ export default async function renderQuiz({ view, extra, go, ctx }) {
       ...(run.mode === 'exam' ? [] : (q.tags || []).map(t =>
         el('span', { class: 'chip static', text: t })))));
 
+    if (useNav) {
+      body.append(el('button', {
+        class: 'icon ghost flagbtn', 'aria-pressed': String(!!item.flagged),
+        onclick: () => { item.flagged = !item.flagged; draw(); },
+      }, item.flagged ? '★ 見直す' : '☆ 見直す'));
+    }
     body.append(el('div', { class: 'qtext' }, ...paras(q.text)));
     for (const f of q.figures || []) body.append(await figure(f));
 
@@ -157,16 +214,21 @@ export default async function renderQuiz({ view, extra, go, ctx }) {
       }
     }
 
+    if (useNav && showNav) nav.append(navPanel());
+    const left = run.items.length - engine.answeredCount(run);
     add(nav,
-      el('button', { onclick: prev, disabled: run.index === 0 || run.mode === 'exam' }, '前へ'),
+      el('button', { onclick: prev, disabled: run.index === 0 }, '前へ'),
       el('span', { class: 'spacer' }),
-      run.mode === 'exam'
-        ? el('span', { class: 'muted', text: `解答済み ${engine.answeredCount(run)}/${run.items.length}` })
+      useNav
+        ? el('button', {
+            class: 'icon ghost', 'aria-expanded': String(showNav),
+            onclick: () => { showNav = !showNav; draw(); },
+          }, left ? `未解答 ${left}` : '一覧')
         : null,
       el('button', {
         class: 'primary',
         onclick: next,
-        disabled: run.grading === 'immediate' && item.selected === null && run.mode !== 'exam',
+        disabled: run.grading === 'immediate' && item.selected === null,
       }, run.index === run.items.length - 1 ? '採点する' : '次へ'));
   }
 
@@ -184,6 +246,10 @@ export default async function renderQuiz({ view, extra, go, ctx }) {
       ev.preventDefault(); next();
     } else if (k === 's' && item.selected !== null && run.grading === 'immediate') {
       ev.preventDefault(); item.revealed = !item.revealed; draw();
+    } else if (k === 'f' && useNav) {
+      ev.preventDefault(); item.flagged = !item.flagged; draw();
+    } else if (k === 'l' && useNav) {
+      ev.preventDefault(); showNav = !showNav; draw();
     }
   }
   document.addEventListener('keydown', onKey);
@@ -197,7 +263,7 @@ export default async function renderQuiz({ view, extra, go, ctx }) {
     const dy = e.changedTouches[0].clientY - touchY;
     touchX = null;
     if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.6) return;
-    if (dx < 0) next(); else if (run.mode !== 'exam') prev();
+    if (dx < 0) next(); else prev();
   };
   view.addEventListener('touchstart', onStart, { passive: true });
   view.addEventListener('touchend', onEnd, { passive: true });
