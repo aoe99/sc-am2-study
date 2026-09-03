@@ -523,6 +523,13 @@ def parse(sid: str) -> list[dict]:
         hi = heads[no]
         end = heads[order[k + 1]] if k + 1 < len(order) else len(lines)
         block = lines[hi:end]
+        # Where the artwork is allowed to reach. A drawing carries almost no
+        # text, so its true bottom is invisible to OCR; the next question is
+        # the only hard stop there is.
+        nxt = lines[end] if end < len(lines) else None
+        limit = ({"page": nxt["page"], "y": nxt["y"] - 0.014}
+                 if nxt and nxt["page"] == block[-1]["page"]
+                 else {"page": block[-1]["page"], "y": 0.93})
         m = HEAD.match(block[0]["text"])
         flags: list[str] = []
         if m is None:
@@ -591,6 +598,8 @@ def parse(sid: str) -> list[dict]:
             "pages": sorted({l["page"] for l in block}),
             "figureLines": [{k: l[k] for k in ("page", "x", "y", "w", "h", "text")}
                             for l in figure],
+            "bottomLimit": limit,
+            "wholeArea": not choices,
             "choiceBoxes": {k: [{kk: l[kk] for kk in ("page", "x", "y", "w", "h")}
                                 for l in v] for k, v in choices.items()},
             # The marker's own box: in a table it sits vertically centred in its

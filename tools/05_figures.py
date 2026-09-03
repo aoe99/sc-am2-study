@@ -42,6 +42,13 @@ def region(q: dict, with_choices: bool = False) -> tuple[int, float, float, floa
     y0 = max(0.0, min(b[2] for b in on) - PAD_Y)
     x1 = min(MAX_X, max(b[3] for b in on) + PAD_X)
     y1 = min(1.0, max(b[4] for b in on) + PAD_Y)
+    if with_choices:
+        # One image has to carry every option, and circuit diagrams put almost
+        # no text on the page — their last label sits well above their last
+        # line. Run to the next question instead of to the last word read.
+        lim = q.get("bottomLimit") or {}
+        if lim.get("page") == page and lim.get("y", 0) > y1:
+            y1 = min(1.0, lim["y"])
     return page, x0, y0, x1 - x0, y1 - y0
 
 
@@ -191,7 +198,7 @@ def main() -> None:
             # The choices are drawn but their rows could not be delimited, so no
             # per-choice crop will exist. One image has to carry all four, or the
             # question cannot be answered at all.
-            whole = bool(q.get("tableChoices")) and not rows
+            whole = q.get("wholeArea") or (bool(q.get("tableChoices")) and not rows)
             r = region(q, with_choices=whole)
             if r is None:
                 continue
