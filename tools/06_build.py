@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """Stage 6 — merge every stage into data/questions.json and the review report.
 
-    python3 tools/06_build.py [session ...]
+    python3 tools/06_build.py [--section am1|am2] [session ...]
+                                       # 省略時は生成済みの区分をすべて統合
 """
 from __future__ import annotations
 import datetime as dt, json, re, sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from sclib import (SESSIONS, SESSION_IDS, CHOICE_KEYS, ROOT, DATA, BUILD,
-                   exam_name, pdf_path, read_json, write_json)
+from sclib import (SESSIONS, SESSION_IDS, SECTIONS, CHOICE_KEYS, ROOT, DATA,
+                   BUILD, build_dir, exam_name, pdf_path, read_json, write_json)
 
 SCHEMA_VERSION = 1
 TAGS = read_json(Path(__file__).resolve().parent / "tags.json")
@@ -26,7 +27,7 @@ SUSPECT = [
 ]
 
 
-def known_chars() -> set:
+def known_chars(section: str) -> set:
     """Every character the 読者特典 explanations use.
 
     That text comes out of the PDF losslessly, so it is a clean 13万字 sample of
@@ -34,27 +35,27 @@ def known_chars() -> set:
     appears there, and appears almost nowhere else in the corpus either, is
     nearly always a misread (擎 for 撃, 発 for 殆).
     """
-    expl = read_json(BUILD / "explanations.json")
+    expl = read_json(build_dir(section) / "explanations.json")
     return {c for sess in expl.values() for q in sess.values()
             for c in q["explanation"]}
 
 
-def tesseract_pages(sid: str) -> dict[int, str]:
-    path = BUILD / "ocr" / f"{sid}.json"
+def tesseract_pages(sid: str, section: str) -> dict[int, str]:
+    path = build_dir(section) / "ocr" / f"{sid}.json"
     if not path.exists():
         return {}
     pages = json.loads(path.read_text(encoding="utf-8"))
     return {n: (p.get("tesseract") or "") for n, p in enumerate(pages, 1)}
 
 
-def rare_chars(sid: str, questions: list[dict], known: set) -> dict[str, list[str]]:
+def rare_chars(sid: str, section: str, questions: list[dict], known: set) -> dict[str, list[str]]:
     """Kanji that are absent from the explanations *and* that the second OCR
     engine did not see either.  Either signal alone is far too noisy; together
     they land almost exclusively on real misreads."""
     from collections import Counter
     freq = Counter(c for q in questions
                    for c in q["text"] + "".join(q["choices"].values()))
-    tess = tesseract_pages(sid)
+    tess = tesseract_pages(sid, section)
     out: dict[str, list[str]] = {}
     for q in questions:
         hay = q["text"] + "\n" + "\n".join(q["choices"].values())
@@ -91,65 +92,82 @@ def suspects(q: dict) -> list[str]:
     return [label for rx, label in SUSPECT if rx.search(hay)]
 
 
-def build(targets: list[str]) -> dict:
-    answers = read_json(BUILD / "answers.json")
-    expl = read_json(BUILD / "explanations.json")
-    parsed = read_json(BUILD / "parsed.json")
-    figs = read_json(BUILD / "figures.json") if (BUILD / "figures.json").exists() else {}
+def available_sections() -> list[str]:
+    return [sec for sec in SECTIONS if (build_dir(sec) / "parsed.json").exists()]
+
+
+def build(targets: list[str], sections: list[str]) -> tuple:
     meta = {s[0]: s for s in SESSIONS}
-
-    known = known_chars()
     questions, review = [], []
-    for sid in targets:
-        odd_by_no = rare_chars(sid, parsed[sid], known)
-        for q in parsed[sid]:
-            no = q["no"]
-            qid = f"{sid}-am2-{no:02d}"
-            ans = answers[sid][str(no)]
-            ex = expl[sid][str(no)]
-            fig = figs.get(sid, {}).get(str(no)) or {}
-            cfigs = fig.get("choiceFigures", {})
-            notes = list(q["flags"])
-            odd = odd_by_no.get(str(no))
-            if odd:
-                notes.append("解説に存在しない漢字: " + " ".join(odd))
-            if len(q["choices"]) != 4:
-                notes.append(f"選択肢が{len(q['choices'])}個")
-            if q["mentionsFigure"] and not fig.get("file"):
-                notes.append("図表に言及しているが画像なし")
-            if ans != ex["answer"]:
-                notes.append(f"正解不一致 IPA={ans} 解説={ex['answer']}")
-            short = len(q["text"]) < 100
-            questions.append({
-                "id": qid, "sessionId": sid, "no": no,
-                "text": q["text"],
-                "choices": [{"key": k, "text": q["choices"].get(k, "")} for k in CHOICE_KEYS],
-                "answer": ans,
-                "explanation": ex["explanation"],
-                "explanationSource": "情報処理教科書 安全確保支援士 読者特典",
-                "figures": [fig["file"]] if fig.get("file") else [],
-                "choiceFigures": cfigs,
-                "tags": tags_for(q["text"] + "\n" + ex["explanation"]),
-                "duplicateGroupId": None,
-                "needsReview": bool(notes),
-                "shortText": short,
-                "source": {
-                    "questionPdf": f"{sid}/{pdf_path(sid, '1問題').name}",
-                    "page": q["pages"][0],
-                    "pageImage": f"build/pages/{sid}/{sid}-p{q['pages'][0]:03d}.png",
-                },
-            })
-            if notes:
-                review.append((qid, notes, q))
 
+    for sec in sections:
+        root = build_dir(sec)
+        answers = read_json(root / "answers.json")
+        expl = read_json(root / "explanations.json")
+        parsed = read_json(root / "parsed.json")
+        figs = read_json(root / "figures.json") if (root / "figures.json").exists() else {}
+        known = known_chars(sec)
+
+        for sid in targets:
+            if sid not in parsed:
+                continue
+            odd_by_no = rare_chars(sid, sec, parsed[sid], known)
+            for q in parsed[sid]:
+                no = q["no"]
+                qid = f"{sid}-{sec}-{no:02d}"
+                ans = answers[sid][str(no)]
+                ex = expl[sid][str(no)]
+                fig = figs.get(sid, {}).get(str(no)) or {}
+                cfigs = fig.get("choiceFigures", {})
+                notes = list(q["flags"])
+                odd = odd_by_no.get(str(no))
+                if odd:
+                    notes.append("解説に存在しない漢字: " + " ".join(odd))
+                if len(q["choices"]) != 4:
+                    notes.append(f"選択肢が{len(q['choices'])}個")
+                if q["mentionsFigure"] and not fig.get("file"):
+                    notes.append("図表に言及しているが画像なし")
+                if ans != ex["answer"]:
+                    notes.append(f"正解不一致 IPA={ans} 解説={ex['answer']}")
+                questions.append({
+                    "id": qid, "sessionId": sid, "section": sec, "no": no,
+                    "text": q["text"],
+                    "choices": [{"key": k, "text": q["choices"].get(k, "")}
+                                for k in CHOICE_KEYS],
+                    "answer": ans,
+                    "explanation": ex["explanation"],
+                    "explanationSource": "情報処理教科書 安全確保支援士 読者特典",
+                    "figures": [fig["file"]] if fig.get("file") else [],
+                    "choiceFigures": cfigs,
+                    "tags": tags_for(q["text"] + "\n" + ex["explanation"]),
+                    "duplicateGroupId": None,
+                    "needsReview": bool(notes),
+                    "shortText": len(q["text"]) < 100,
+                    "source": {
+                        "questionPdf": f"{sid}/{pdf_path(sid, '1問題', sec).name}",
+                        "page": q["pages"][0],
+                        "pageImage": f"build/{sec}/pages/{sid}/{sid}-p{q['pages'][0]:03d}.png",
+                    },
+                })
+                if notes:
+                    review.append((qid, notes, q))
+
+    order = {s: n for n, s in enumerate(SESSION_IDS)}
+    used = sorted({q["sessionId"] for q in questions}, key=lambda s: order[s])
     sessions = [{"id": s, "label": meta[s][1], "year": meta[s][2],
-                 "term": meta[s][3], "examName": exam_name(s)} for s in targets]
+                 "term": meta[s][3], "examName": exam_name(s)} for s in used]
+    questions.sort(key=lambda q: (order[q["sessionId"]], q["section"], q["no"]))
     doc = {
         "meta": {
             "generatedAt": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
             "schemaVersion": SCHEMA_VERSION,
             "sessionCount": len(sessions),
             "questionCount": len(questions),
+            "sections": [{"id": sec, "label": SECTIONS[sec]["label"],
+                          "count": SECTIONS[sec]["count"],
+                          "minutes": SECTIONS[sec]["minutes"],
+                          "questionCount": sum(1 for q in questions if q["section"] == sec)}
+                         for sec in sections],
         },
         "sessions": sessions,
         "questions": questions,
@@ -165,10 +183,10 @@ def write_review(doc: dict, review: list) -> None:
              "画像パスは `data/` からの相対。", ""]
     for qid, notes, q in review:
         page = q["pages"][0]
-        sid = qid.split("-")[0]
+        sid, sec = qid.split("-")[0], qid.split("-")[1]
         lines += [f"## {qid}", "",
                   f"- 指摘: {' / '.join(notes)}",
-                  f"- ページ画像: `build/pages/{sid}/{sid}-p{page:03d}.png`", "",
+                  f"- ページ画像: `build/{sec}/pages/{sid}/{sid}-p{page:03d}.png`", "",
                   "```", q["text"], ""]
         for k in CHOICE_KEYS:
             lines.append(f"{k}  {q['choices'].get(k, '(なし)')}")
@@ -178,12 +196,16 @@ def write_review(doc: dict, review: list) -> None:
 
 
 def main() -> None:
-    targets = sys.argv[1:] or SESSION_IDS
-    doc, review = build(targets)
+    from sclib import section_of, targets_of
+    args = sys.argv[1:]
+    sections = ([section_of(args)] if "--section" in args else available_sections())
+    doc, review = build(targets_of(args), sections)
     write_json(DATA / "questions.json", doc)
     write_review(doc, review)
     from collections import Counter
     tc = Counter(t for q in doc["questions"] for t in q["tags"])
+    for sec in doc["meta"]["sections"]:
+        print(f"  {sec['label']}: {sec['questionCount']} 問")
     print(f"\n{doc['meta']['questionCount']} 問 / {doc['meta']['sessionCount']} 回"
           f"  要確認 {len(review)} 問  図表 "
           f"{sum(1 for q in doc['questions'] if q['figures'])} 問")

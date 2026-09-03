@@ -2,6 +2,7 @@
 
 import * as data from '../data.js';
 import * as leitner from '../leitner.js';
+import * as settings from '../settings.js';
 import { el, pct, fmtDate } from '../ui.js';
 
 const SVG = 'http://www.w3.org/2000/svg';
@@ -10,9 +11,25 @@ const SESSION_GAP = 20 * 60000;   // a pause this long starts a new sitting
 export default async function renderStats({ view, extra, go }) {
   extra.append(el('button', { class: 'icon ghost', onclick: () => go('home') }, 'ホーム'));
 
-  const [answers, states] = await Promise.all([data.allAnswers(), data.allStates()]);
-  const rows = (answers || []).slice().sort((a, b) => a.answeredAt - b.answeredAt);
-  const byId = new Map((states || []).map(s => [s.questionId, s]));
+  const section = settings.get('section');
+  const secs = data.sections();
+  const mine = new Set(data.inSection(section).map(q => q.id));
+  const [answersAll, statesAll] = await Promise.all([data.allAnswers(), data.allStates()]);
+  const answers = (answersAll || []).filter(a => mine.has(a.questionId));
+  const states = (statesAll || []).filter(s => mine.has(s.questionId));
+  const rows = answers.slice().sort((a, b) => a.answeredAt - b.answeredAt);
+  const byId = new Map(states.map(s => [s.questionId, s]));
+
+  if (secs.length > 1) {
+    const row = el('div', { class: 'chips', style: 'margin-bottom:14px' });
+    for (const s of secs) {
+      row.append(el('button', {
+        class: 'chip', 'aria-pressed': String(s.id === section),
+        onclick: () => { settings.set('section', s.id); go('stats'); },
+      }, s.label));
+    }
+    view.append(row);
+  }
 
   if (!rows.length) {
     view.append(el('div', { class: 'card' },
@@ -25,7 +42,7 @@ export default async function renderStats({ view, extra, go }) {
   // --- by tag ---
   const tag = new Map();
   const year = new Map();
-  for (const q of data.questions()) {
+  for (const q of data.inSection(section)) {
     const s = byId.get(q.id);
     if (!s || !s.attempts) continue;
     for (const t of q.tags || []) bump(tag, t, s);
@@ -63,8 +80,8 @@ export default async function renderStats({ view, extra, go }) {
       + `  /  全 ${rows.length} 解答`)));
 
   // --- Leitner ---
-  const boxes = leitner.boxCounts(states || []);
-  const dueNow = data.questions().filter(q => leitner.isDue(byId.get(q.id))).length;
+  const boxes = leitner.boxCounts(states);
+  const dueNow = data.inSection(section).filter(q => leitner.isDue(byId.get(q.id))).length;
   view.append(el('div', { class: 'card' },
     el('h2', { text: 'ライトナーの箱' }),
     barChart([1, 2, 3, 4, 5].map(b => [`箱${b}`, boxes[b], Math.max(1, Math.max(...Object.values(boxes)))]), true),

@@ -7,16 +7,18 @@ leftmost column, choice markers one indent in, and continuation lines one
 indent further still.  Anything inside a question that belongs to none of
 those is figure/table artwork, which gets flagged and cropped in stage 5.
 
-    python3 tools/04_parse.py [session ...]
+    python3 tools/04_parse.py [--section am1|am2] [session ...]
 """
 from __future__ import annotations
 import difflib, json, re, sys, unicodedata
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from sclib import (SESSION_IDS, CHOICE_KEYS, BUILD, PDFTOOL, clean,
-                   pdf_path, run_tool, write_json)
+from sclib import (CHOICE_KEYS, SECTIONS, PDFTOOL, build_dir, clean, pdf_path,
+                   question_count, run_tool, section_of, targets_of, write_json)
 import tempfile
 
+SECTION = section_of(sys.argv[1:])
+N_MAX = question_count(SECTION)
 CORR = json.loads((Path(__file__).resolve().parent / "corrections.json")
                   .read_text(encoding="utf-8"))
 FIXES = [(re.compile(r["pattern"], re.M), r["repl"], r["why"])
@@ -31,7 +33,7 @@ def _vocab() -> set:
     Those come out of the PDF with no OCR involved, so they are a free
     domain dictionary — enough to tell "Authent ication" (a glyph gap Vision
     read as a space) from "Pass the" (a real one)."""
-    path = BUILD / "explanations.json"
+    path = build_dir(SECTION) / "explanations.json"
     if not path.exists():
         return set()
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -94,13 +96,23 @@ def norm(s: str) -> str:
     s = s.replace("―", "—").replace("~", "〜")
     s = re.sub(rf"(?<=[{CJK}]) +", "", s)
     s = re.sub(rf" +(?=[{CJK}])", "", s)
+    return s.strip()
+
+
+def apply_fixes(s: str) -> str:
+    """Run the correction dictionary over a whole run of prose.
+
+    It has to see the joined text, not each OCR line: a misread term is as
+    likely as not to straddle a line wrap ("エクスプロイ" / "ド"), and a
+    per-line pass would never see it whole.
+    """
     if VOCAB:
         s = rejoin_split_words(s)
     for rx, repl, why in FIXES:
         s, n = rx.subn(repl, s)
         if n:
             applied[why] = applied.get(why, 0) + n
-    return s.strip()
+    return s
 
 
 DROP_SKIP = re.compile(r"[\s，,、。．.・:：]")
@@ -169,8 +181,9 @@ def repair_dropped(pages: list[dict], pdf) -> None:
 
 
 def load(sid: str) -> list[dict]:
-    pages = json.loads((BUILD / "ocr" / f"{sid}.json").read_text(encoding="utf-8"))
-    repair_dropped(pages, pdf_path(sid, "1問題"))
+    pages = json.loads((build_dir(SECTION) / "ocr" / f"{sid}.json")
+                       .read_text(encoding="utf-8"))
+    repair_dropped(pages, pdf_path(sid, "1問題", SECTION))
     out = []
     for pi, page in enumerate(pages, 1):
         for li, l in enumerate(page["lines"]):
@@ -206,13 +219,13 @@ def find_headings(lines: list[dict]) -> dict[int, int]:
         got: dict[int, int] = {}
         want = 1
         for i, ds in pool:
-            if want > 25:
+            if want > N_MAX:
                 break
             if ds == str(want):
                 got[want] = i; want += 1
             elif loose and ds.startswith(str(want)):
                 got[want] = i; want += 1
-            elif loose and ds.isdigit() and want < int(ds) <= 25:
+            elif loose and ds.isdigit() and want < int(ds) <= N_MAX:
                 got[int(ds)] = i; want = int(ds) + 1   # a heading was missed
         return got
 
@@ -223,7 +236,7 @@ def find_headings(lines: list[dict]) -> dict[int, int]:
         pool = cands
         for _ in range(4):
             got = scan(pool, loose)
-            if len(got) == 25:
+            if len(got) == N_MAX:
                 return got
             if len(got) > len(best):
                 best = got
@@ -234,9 +247,10 @@ def find_headings(lines: list[dict]) -> dict[int, int]:
     # Whatever is still missing lost its 問N to OCR, but the heading itself is
     # still the only line sitting alone in the left column between its neighbours.
     taken = set(best.values())
-    for miss in [n for n in range(1, 26) if n not in best]:
+    for miss in [n for n in range(1, N_MAX + 1) if n not in best]:
         lo = max((best[n] for n in range(miss - 1, 0, -1) if n in best), default=-1)
-        hi = min((best[n] for n in range(miss + 1, 26) if n in best), default=len(lines))
+        hi = min((best[n] for n in range(miss + 1, N_MAX + 1) if n in best),
+                 default=len(lines))
         slot = next((j for j in range(lo + 1, hi)
                      if lines[j]["x"] <= head_x and j not in taken), None)
         if slot is not None:
@@ -391,7 +405,7 @@ def join(lines: list[dict]) -> str:
                 and part[0].isascii() and part[0].isalnum():
             out += " "
         out += part
-    return out.strip()
+    return apply_fixes(out.strip())
 
 
 def parse(sid: str) -> list[dict]:
@@ -407,8 +421,8 @@ def parse(sid: str) -> list[dict]:
         remap = {old: new for new, old in enumerate(keep)}
         lines = [lines[n] for n in keep]
         heads = {no: remap[i] for no, i in heads.items() if i in remap}
-    if len(heads) != 25:
-        print(f"  ! {sid}: 見出し {len(heads)}/25 件しか検出できず")
+    if len(heads) != N_MAX:
+        print(f"  ! {sid}: 見出し {len(heads)}/{N_MAX} 件しか検出できず")
     order = sorted(heads)
     out = []
     for k, no in enumerate(order):
@@ -471,14 +485,14 @@ def parse(sid: str) -> list[dict]:
 
 
 def main() -> None:
-    targets = sys.argv[1:] or SESSION_IDS
+    targets = targets_of(sys.argv[1:])
     result = {}
     for sid in targets:
         qs = parse(sid)
         result[sid] = qs
         nf = sum(1 for q in qs if q["flags"])
         fig = sum(1 for q in qs if q["figureLines"])
-        print(f"{sid:9} {len(qs):2}/25  要確認 {nf:2}  図表候補 {fig:2}")
+        print(f"{sid:9} {len(qs):2}/{N_MAX}  要確認 {nf:2}  図表候補 {fig:2}")
         for q in qs:
             if q["flags"]:
                 print(f"    問{q['no']}: {'; '.join(q['flags'])}")
@@ -496,7 +510,7 @@ def main() -> None:
         print("\n補正辞書の適用:")
         for why, n in sorted(applied.items(), key=lambda kv: -kv[1]):
             print(f"  {n:3} 件  {why}")
-    write_json(BUILD / "parsed.json", result)
+    write_json(build_dir(SECTION) / "parsed.json", result)
 
 
 if __name__ == "__main__":

@@ -4,13 +4,13 @@
 Deliberately writes a plain local file (never published anywhere) because the
 問題冊子 and the 読者特典 解説 are both copyrighted.
 
-    python3 tools/07_review_html.py [session ...]
+    python3 tools/07_review_html.py [--section am1|am2] [session ...]
 """
 from __future__ import annotations
 import html, sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from sclib import SESSION_IDS, DATA, BUILD, read_json
+from sclib import SECTIONS, DATA, BUILD, build_dir, read_json, section_of, targets_of
 
 CSS = """
 :root{--bg:#fff;--fg:#1a1a1a;--mut:#666;--line:#e0e0e0;--warn:#b45309;--ok:#047857;--accent:#1d4ed8}
@@ -38,13 +38,16 @@ figure{margin:12px 0}figure img{max-width:100%;border:1px solid var(--line);bord
 """
 
 
-def render(sid: str) -> Path:
-    doc = read_json(DATA / "questions.json")
-    qs = [q for q in doc["questions"] if q["sessionId"] == sid]
+def render(sid: str, section: str, doc: dict) -> Path | None:
+    qs = [q for q in doc["questions"]
+          if q["sessionId"] == sid and q.get("section", "am2") == section]
+    if not qs:
+        return None
     label = next(s["label"] for s in doc["sessions"] if s["id"] == sid)
+    label = f"{label} {SECTIONS[section]['label']}"
     out = [f"<!doctype html><meta charset=utf-8><title>{sid} 校正</title>",
            f"<style>{CSS}</style>",
-           f"<header><h1>{label} 午前II — 抽出結果の校正</h1>",
+           f"<header><h1>{label} — 抽出結果の校正</h1>",
            f"<div class=sub>{len(qs)} 問  /  要確認 "
            f"{sum(1 for q in qs if q['needsReview'])} 問  /  左=抽出テキスト  右=元のページ画像</div></header><main>"]
     for q in qs:
@@ -59,12 +62,12 @@ def render(sid: str) -> Path:
         out.append(f'<div class=tags>{"".join(f"<span>{html.escape(t)}</span>" for t in q["tags"])}</div>')
         out.append(f'<div class=text>{html.escape(q["text"])}</div>')
         for f in q["figures"]:
-            out.append(f'<figure><img src="../{f}" alt=""></figure>')
+            out.append(f'<figure><img src="../../{f}" alt=""></figure>')
         out.append("<ol class=ch>")
         for c in q["choices"]:
             cls = " class=correct" if c["key"] == q["answer"] else ""
             cf = q["choiceFigures"].get(c["key"])
-            body = (f'<img src="../{cf}" alt="" style="max-width:100%">' if cf
+            body = (f'<img src="../../{cf}" alt="" style="max-width:100%">' if cf
                     else html.escape(c["text"]))
             out.append(f'<li{cls}><span class=k>{c["key"]}</span>'
                        f'<span>{body}</span></li>')
@@ -72,17 +75,23 @@ def render(sid: str) -> Path:
         out.append(f'<div class=exp>{html.escape(q["explanation"])}</div>')
         out.append(f'<div class=src>正解 {q["answer"]}  /  出典: {q["explanationSource"]}'
                    f'  /  {q["source"]["questionPdf"]} p.{q["source"]["page"]}</div>')
-        out.append(f'</div><div class=scan><img src="../{q["source"]["pageImage"]}" alt=""></div></section>')
+        out.append(f'</div><div class=scan><img src="../../{q["source"]["pageImage"]}" alt=""></div></section>')
     out.append("</main>")
-    path = BUILD / f"review-{sid}.html"
+    path = build_dir(section) / f"review-{sid}.html"
     path.write_text("\n".join(out), encoding="utf-8")
     return path
 
 
 def main() -> None:
-    for sid in (sys.argv[1:] or SESSION_IDS):
-        p = render(sid)
-        print(f"  → {p.relative_to(Path(__file__).resolve().parent.parent)}")
+    args = sys.argv[1:]
+    doc = read_json(DATA / "questions.json")
+    secs = [section_of(args)] if "--section" in args else list(SECTIONS)
+    root = Path(__file__).resolve().parent.parent
+    for sid in targets_of(args):
+        for sec in secs:
+            p = render(sid, sec, doc)
+            if p:
+                print(f"  → {p.relative_to(root)}")
 
 
 if __name__ == "__main__":

@@ -16,6 +16,18 @@ const urlCache = new Map();
 export const meta = () => state.meta;
 export const sessions = () => state.sessions;
 export const questions = () => state.questions;
+
+/** Section descriptors from the pack, oldest packs defaulting to 午前II only. */
+export function sections() {
+  const fromMeta = (state.meta && state.meta.sections) || null;
+  if (fromMeta && fromMeta.length) return fromMeta;
+  return [{ id: 'am2', label: '午前Ⅱ', count: 25, minutes: 40,
+            questionCount: state.questions.length }];
+}
+
+export const sectionOf = q => q.section || 'am2';
+export const sectionInfo = id => sections().find(s => s.id === id) || sections()[0];
+export const inSection = id => state.questions.filter(q => sectionOf(q) === id);
 export const byId = id => state.byId.get(id);
 export const isLoaded = () => state.loaded;
 export const groupOf = q =>
@@ -109,11 +121,19 @@ export async function figureUrl(path) {
   return url;
 }
 
-export const allTags = () => {
+export const allTags = (section) => {
   const t = new Set();
-  for (const q of state.questions) for (const x of q.tags || []) t.add(x);
+  for (const q of state.questions) {
+    if (section && sectionOf(q) !== section) continue;
+    for (const x of q.tags || []) t.add(x);
+  }
   return [...t].sort();
 };
+
+/** Sessions that actually carry questions for this section. */
+export const sessionsIn = section =>
+  state.sessions.filter(s =>
+    state.questions.some(q => q.sessionId === s.id && sectionOf(q) === section));
 
 // --- study record ---------------------------------------------------------
 

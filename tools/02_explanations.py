@@ -6,25 +6,26 @@ PDFKit silently drops it (R07aki loses all 30 of its "（").  When the bracket
 counts do not balance we render the page, OCR it, and diff-align the two texts
 to put the missing brackets back at their exact positions.
 
-    python3 tools/02_explanations.py [session ...]
+    python3 tools/02_explanations.py [--section am1|am2] [session ...]
 """
 from __future__ import annotations
 import difflib, json, re, subprocess, sys, tempfile
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from sclib import (SESSION_IDS, BUILD, PDFTOOL, pdf_path, pdf_text, clean,
-                   unwrap, write_json)
+from sclib import (SECTIONS, PDFTOOL, build_dir, pdf_path, pdf_text, clean,
+                   question_count, section_of, targets_of, unwrap, write_json)
 
 HEAD = re.compile(r"[●○]\s*[問間]\s*(\d{1,2})\s*正解\s*[：:]\s*(ア|イ|ウ|エ)")
 # Page furniture repeated on every sheet of the 読者特典 PDFs.
 NOISE = [
     re.compile(r"^情報処理教科書\s*安全確保支援士.*読者特典\s*$"),
-    re.compile(r"^［.{0,20}午前Ⅱ解答・解説］\s*$"),
+    re.compile(r"^［.{0,20}午前[ⅠⅡIⅰ]+解答・解説］\s*$"),
     re.compile(r"^[-–—]\s*\d+\s*[-–—]\s*$"),
     re.compile(r"^©\s*\d{4}.*$"),
-    re.compile(r"^令和.*年度.*情報処理安全確保支援士\s*$"),
-    re.compile(r"^平成.*年度.*(情報処理安全確保支援士|情報セキュリティスペシャリスト)\s*$"),
-    re.compile(r"^＜午前Ⅱ解答・解説＞\s*$"),
+    re.compile(r"^(令和|平成).*年度.*(試験|支援士|スペシャリスト)\s*$"),
+    re.compile(r"^(プロジェクトマネージャ|データベーススペシャリスト|システム監査技術者"
+               r"|エンベデッドシステムスペシャリスト|ネットワークスペシャリスト)試験\s*$"),
+    re.compile(r"^＜午前[ⅠⅡIⅰ]+解答・解説＞\s*$"),
 ]
 # Half- and full-width parens are one class: the source mixes them freely.
 BRACKET_CLASSES = [("（(", "）)"), ("「", "」"), ("［", "］"), ("【", "】")]
@@ -107,27 +108,29 @@ def split_questions(text: str, sid: str) -> dict[int, dict]:
 
 
 def main() -> None:
-    targets = sys.argv[1:] or SESSION_IDS
+    section = section_of(sys.argv[1:])
+    targets = targets_of(sys.argv[1:])
+    n = question_count(section)
     result, log, bad = {}, [], []
     for sid in targets:
-        pdf = pdf_path(sid, "4教科書解説")
+        pdf = pdf_path(sid, "4教科書解説", section)
         text = clean(pdf_text(pdf))
         text = repair_brackets(text, pdf, sid, log)
         qs = split_questions(text, sid)
-        missing = [n for n in range(1, 26) if n not in qs]
+        missing = [x for x in range(1, n + 1) if x not in qs]
         short = [n for n, q in qs.items() if len(q["explanation"]) < 40]
         if missing:
             bad.append(f"{sid}: 解説なし 問{missing}")
         lens = [len(q["explanation"]) for q in qs.values()]
         result[sid] = {str(n): qs[n] for n in sorted(qs)}
-        print(f"{sid:9} {len(qs):2}/25  解説長 min={min(lens)} med="
+        print(f"{sid:9} {len(qs):2}/{n}  解説長 min={min(lens)} med="
               f"{sorted(lens)[len(lens)//2]} max={max(lens)}"
               + (f"  短い:問{short}" if short else ""))
     for l in log:
         print("  *", l)
     for b in bad:
         print("  !", b)
-    write_json(BUILD / "explanations.json", result)
+    write_json(build_dir(section) / "explanations.json", result)
     if bad:
         raise SystemExit(1)
 

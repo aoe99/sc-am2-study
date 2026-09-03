@@ -6,10 +6,16 @@ import { shuffled } from './ui.js';
 
 export const MODES = {
   practice: { label: '練習', timed: false, reveal: true },
-  exam:     { label: '本番', timed: true,  reveal: false, count: 25, minutes: 40 },
+  exam:     { label: '本番', timed: true,  reveal: false },
   review:   { label: '復習', timed: false, reveal: true },
-  session:  { label: '年度別', timed: false, reveal: true, count: 25 },
+  session:  { label: '年度別', timed: false, reveal: true },
 };
+
+/** 午前I is 30問50分, 午前II is 25問40分 — both read from the imported pack. */
+export function examConfig(section) {
+  const info = data.sectionInfo(section);
+  return { count: info.count || 25, minutes: info.minutes || 40 };
+}
 
 export const PASS_RATIO = 0.6;   // 25問中15問
 
@@ -36,7 +42,7 @@ function dedupe(list) {
  */
 export function build(opts, states) {
   const stateBy = new Map((states || []).map(s => [s.questionId, s]));
-  let pool = data.questions();
+  let pool = data.questions().filter(q => data.sectionOf(q) === opts.section);
 
   if (opts.mode === 'session') {
     pool = pool.filter(q => q.sessionId === opts.sessionId);
@@ -61,7 +67,7 @@ export function build(opts, states) {
 
   const seed = (Date.now() ^ (pool.length * 2654435761)) >>> 0;
   let list = shuffled(pool, seed);
-  const want = opts.mode === 'exam' ? MODES.exam.count : opts.count;
+  const want = opts.mode === 'exam' ? examConfig(opts.section).count : opts.count;
   if (want && want > 0 && want < list.length) list = list.slice(0, want);
   return { list, stateBy };
 }
@@ -72,8 +78,9 @@ export function createRun(list, opts) {
     grading: opts.mode === 'exam' ? 'end' : (opts.grading || 'immediate'),
     shuffleChoices: !!opts.shuffleChoices,
     startedAt: Date.now(),
+    section: opts.section,
     deadline: opts.mode === 'exam'
-      ? Date.now() + MODES.exam.minutes * 60000 : null,
+      ? Date.now() + examConfig(opts.section).minutes * 60000 : null,
     index: 0,
     items: list.map(q => ({
       id: q.id, selected: null, correct: null,

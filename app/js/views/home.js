@@ -2,12 +2,17 @@
 
 import * as data from '../data.js';
 import * as leitner from '../leitner.js';
+import * as settings from '../settings.js';
 import { el, pct, fmtDate } from '../ui.js';
 
 const DAY = 86400000;
 
 export default async function renderHome({ view, extra, go }) {
-  const qs = data.questions();
+  const secs = data.sections();
+  let section = settings.get('section');
+  if (!secs.some(s => s.id === section)) section = settings.set('section', secs[0].id);
+  const info = data.sectionInfo(section);
+  const qs = data.inSection(section);
   const states = (await data.allStates()) || [];
   const answers = (await data.allAnswers()) || [];
   const byId = new Map(states.map(s => [s.questionId, s]));
@@ -30,6 +35,17 @@ export default async function renderHome({ view, extra, go }) {
     el('button', { class: 'icon ghost', onclick: () => go('stats') }, '統計'),
     el('button', { class: 'icon ghost', onclick: () => go('settings') }, '設定'));
 
+  if (secs.length > 1) {
+    const row = el('div', { class: 'chips', style: 'margin-bottom:14px' });
+    for (const s of secs) {
+      row.append(el('button', {
+        class: 'chip', 'aria-pressed': String(s.id === section),
+        onclick: () => { settings.set('section', s.id); go('home'); },
+      }, `${s.label}  ${s.questionCount}問`));
+    }
+    view.append(row);
+  }
+
   view.append(
     el('div', { class: 'card' },
       el('div', { class: 'grid two' },
@@ -47,7 +63,8 @@ export default async function renderHome({ view, extra, go }) {
       el('h2', { text: 'モードを選ぶ' }),
       el('div', { class: 'grid two' },
         el('button', { class: 'primary', onclick: () => go('setup/practice') }, '練習'),
-        el('button', { onclick: () => go('setup/exam') }, '本番 25問40分'),
+        el('button', { onclick: () => go('setup/exam') },
+          `本番 ${info.count}問${info.minutes}分`),
         el('button', {
           onclick: () => go('setup/review'),
           disabled: due === 0,

@@ -6,17 +6,22 @@ prose nor a choice, plus any hole in the page too tall to be line spacing.
 Crops are re-rendered straight from the PDF at 300dpi rather than cut out of
 the page PNG, so nothing is resampled twice.
 
-    python3 tools/05_figures.py [session ...]
+    python3 tools/05_figures.py [--section am1|am2] [session ...]
 """
 from __future__ import annotations
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from sclib import SESSION_IDS, DATA, BUILD, pdf_path, run_tool, read_json, write_json
+from sclib import (DATA, build_dir, pdf_path, read_json, run_tool, section_of,
+                   targets_of, write_json)
 
 FIGDIR = DATA / "figures"
-PAD_X, PAD_Y = 0.055, 0.018
-MIN_X, MAX_X = 0.055, 0.945
+# OCR boxes sit inside the cell borders, so the pad has to clear the rules
+# of a table as well as the glyphs.
+PAD_X, PAD_Y = 0.08, 0.018
+# Artwork often runs wider than the text column, so allow more margin
+# than the prose uses before clamping.
+MIN_X, MAX_X = 0.035, 0.965
 
 
 def region(q: dict) -> tuple[int, float, float, float, float] | None:
@@ -133,11 +138,12 @@ def choice_rows(q: dict) -> dict:
 
 
 def main() -> None:
-    targets = sys.argv[1:] or SESSION_IDS
-    parsed = read_json(BUILD / "parsed.json")
+    section = section_of(sys.argv[1:])
+    targets = targets_of(sys.argv[1:])
+    parsed = read_json(build_dir(section) / "parsed.json")
     index: dict[str, dict] = {}
     for sid in targets:
-        pdf = pdf_path(sid, "1問題")
+        pdf = pdf_path(sid, "1問題", section)
         outdir = FIGDIR / sid
         made = 0
         for q in parsed[sid]:
@@ -151,7 +157,7 @@ def main() -> None:
                 if page == next(iter(rows.values()))[0] and first > y:
                     h = min(h, first - y)          # header only; rows are cropped below
             outdir.mkdir(parents=True, exist_ok=True)
-            name = f"{sid}-am2-{q['no']:02d}.png"
+            name = f"{sid}-{section}-{q['no']:02d}.png"
             run_tool("crop", pdf, page, f"{x:.5f}", f"{y:.5f}",
                      f"{w:.5f}", f"{h:.5f}", outdir / name, "--dpi", "300")
             index.setdefault(sid, {})[str(q["no"])] = {
@@ -171,13 +177,13 @@ def main() -> None:
                 str(q["no"]), {"choiceFigures": {}})
             entry.setdefault("choiceFigures", {})
             for key, (page, x, y, w, h) in choice_rows(q).items():
-                name = f"{sid}-am2-{q['no']:02d}-{'アイウエ'.index(key)}.png"
+                name = f"{sid}-{section}-{q['no']:02d}-{'アイウエ'.index(key)}.png"
                 run_tool("crop", pdf, page, f"{x:.5f}", f"{y:.5f}",
                          f"{w:.5f}", f"{h:.5f}", outdir / name, "--dpi", "300")
                 entry["choiceFigures"][key] = f"figures/{sid}/{name}"
             tables += 1
         print(f"{sid:9} 図表 {made} 件  表形式選択肢 {tables} 問")
-    write_json(BUILD / "figures.json", index)
+    write_json(build_dir(section) / "figures.json", index)
 
 
 if __name__ == "__main__":

@@ -64,9 +64,10 @@ def main() -> None:
     # Group on the question text, then confirm with the choices.  Keying on the
     # choices as well would split real re-runs apart, because a single ィ/イ that
     # the OCR read differently in two sittings is enough to break a hash.
-    bytext: dict[str, list[dict]] = defaultdict(list)
+    # 午前I and 午前II are different papers; only group within a section.
+    bytext: dict[tuple, list[dict]] = defaultdict(list)
     for q in qs:
-        bytext[canon(q["text"])].append(q)
+        bytext[(q.get("section", "am2"), canon(q["text"]))].append(q)
 
     parent: dict[str, str] = {q["id"]: q["id"] for q in qs}
 
@@ -114,6 +115,8 @@ def main() -> None:
         ia = ids[a]
         for b in range(a + 1, len(ids)):
             ib = ids[b]
+            if byid[ia].get("section") != byid[ib].get("section"):
+                continue
             if gid.get(ia) and gid.get(ia) == gid.get(ib):
                 continue
             ga, gb = gset[ia], gset[ib]
@@ -131,7 +134,7 @@ def main() -> None:
     # the extracted choices disagree, one of the two readings is an OCR error.
     same_text = defaultdict(list)
     for q in qs:
-        same_text[canon(q["text"])].append(q)
+        same_text[(q.get("section", "am2"), canon(q["text"]))].append(q)
     conflicts = []
     for members in same_text.values():
         for a in range(len(members)):

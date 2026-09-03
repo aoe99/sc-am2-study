@@ -4,6 +4,7 @@
 const KEY = 'sc-am2:settings';
 
 const DEFAULTS = {
+  section: 'am2',         // 午前I / 午前II — one paper at a time
   theme: 'auto',          // auto | light | dark
   fontScale: 1,           // 0.9 | 1 | 1.15
   shuffleChoices: true,   // §5-5 — on by default

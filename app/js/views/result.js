@@ -32,8 +32,10 @@ export default async function renderResult({ view, extra, go, ctx }) {
 
   extra.append(el('button', { class: 'icon ghost', onclick: () => go('home') }, 'ホーム'));
 
+  const secLabel = run.section ? data.sectionInfo(run.section).label : '';
   view.append(el('div', { class: 'card' },
-    el('h2', { text: isExam ? '本番モードの結果' : '結果' }),
+    el('h2', { text: (isExam ? '本番モードの結果' : '結果')
+                     + (secLabel ? ` — ${secLabel}` : '') }),
     el('div', { class: 'grid two' },
       el('div', { class: 'stat' },
         el('b', { text: `${score} / ${total}` }), el('span', { text: '正解数' })),
@@ -43,7 +45,7 @@ export default async function renderResult({ view, extra, go, ctx }) {
         el('b', { text: fmtClock(elapsed) }), el('span', { text: '所要時間' })),
       isExam ? el('div', { class: 'stat' },
         el('b', { text: ok ? '合格' : '不合格', style: `color:var(--${ok ? 'ok' : 'ng'})` }),
-        el('span', { text: '合格ライン 60%（15問）' })) : null),
+        el('span', { text: `合格ライン 60%（${Math.ceil(total * engine.PASS_RATIO)}問）` })) : null),
     el('div', { style: 'margin-top:14px' },
       el('div', { class: 'bar-track' },
         el('div', { class: 'bar-fill', style: `width:${ratio}%;background:var(--${ok ? 'ok' : 'ng'})` })))));

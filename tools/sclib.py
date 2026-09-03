@@ -37,16 +37,55 @@ SESSIONS = [
 SESSION_IDS = [s[0] for s in SESSIONS]
 CHOICE_KEYS = ["ア", "イ", "ウ", "エ"]
 
+# 午前I is the 高度共通 paper (30問50分); 午前II is the SC-specific one (25問40分).
+# Both are 4-choice multiple choice with the same booklet layout, so the whole
+# pipeline is shared and only these numbers differ.
+SECTIONS = {
+    "am1": {"code": "1", "dir": "午前I", "label": "午前Ⅰ", "count": 30, "minutes": 50},
+    "am2": {"code": "2", "dir": "午前II", "label": "午前Ⅱ", "count": 25, "minutes": 40},
+}
+DEFAULT_SECTION = "am2"
+
+
+def section_of(argv) -> str:
+    """Pull --section from a stage's argv (default 午前II)."""
+    if "--section" in argv:
+        v = argv[argv.index("--section") + 1]
+        if v not in SECTIONS:
+            raise SystemExit(f"unknown section: {v} (expected {list(SECTIONS)})")
+        return v
+    return DEFAULT_SECTION
+
+
+def targets_of(argv) -> list:
+    """Session ids given on the command line, minus flags and their values."""
+    out, i = [], 0
+    while i < len(argv):
+        if argv[i].startswith("--"):
+            i += 2 if argv[i] == "--section" else 1
+        else:
+            out.append(argv[i]); i += 1
+    return out or SESSION_IDS
+
+
+def build_dir(section: str) -> Path:
+    return BUILD / section
+
+
+def question_count(section: str) -> int:
+    return SECTIONS[section]["count"]
+
 # 情報処理安全確保支援士 started 平成29年度春期; before that it was 情報セキュリティスペシャリスト.
 def exam_name(sid: str) -> str:
     return ("情報セキュリティスペシャリスト試験"
             if sid in ("H28haru", "H28aki") else "情報処理安全確保支援士試験")
 
 
-def pdf_path(sid: str, kind: str) -> Path:
+def pdf_path(sid: str, kind: str, section: str = DEFAULT_SECTION) -> Path:
     """kind: '1問題' | '2解答例' | '4教科書解説'"""
     prefix = dict((s[0], s[4]) for s in SESSIONS)[sid]
-    return PDF_ROOT / sid / f"{prefix}_2_午前II_{kind}.pdf"
+    sec = SECTIONS[section]
+    return PDF_ROOT / sid / f"{prefix}_{sec['code']}_{sec['dir']}_{kind}.pdf"
 
 
 def run_tool(*args: str) -> str:

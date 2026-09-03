@@ -9,11 +9,12 @@ const COUNTS = [10, 25, 50, 0];   // 0 = 全問
 
 export default async function renderSetup({ view, args, go, ctx }) {
   const mode = args[0] || 'practice';
+  const section = settings.get('section');
   const states = (await data.allStates()) || [];
 
-  if (mode === 'exam') return examSetup(view, go, ctx);
+  if (mode === 'exam') return examSetup(view, go, ctx, section);
   if (mode === 'review') return start(go, ctx, { mode: 'review' }, states);
-  if (mode === 'session') return sessionSetup(view, go, ctx, states);
+  if (mode === 'session') return sessionSetup(view, go, ctx, states, section);
 
   // --- practice ---
   const chosen = { count: 25, sessionIds: [], tags: [], onlyUnseen: false, onlyWrong: false };
@@ -31,7 +32,7 @@ export default async function renderSetup({ view, args, go, ctx }) {
   });
 
   const sessionRow = el('div', { class: 'chips' });
-  for (const s of data.sessions()) {
+  for (const s of data.sessionsIn(section)) {
     sessionRow.append(toggleChip(s.label.replace(/年度\s*/, ''), on => {
       if (on) chosen.sessionIds.push(s.id);
       else chosen.sessionIds = chosen.sessionIds.filter(x => x !== s.id);
@@ -40,7 +41,7 @@ export default async function renderSetup({ view, args, go, ctx }) {
   }
 
   const tagRow = el('div', { class: 'chips' });
-  for (const t of data.allTags()) {
+  for (const t of data.allTags(section)) {
     tagRow.append(toggleChip(t, on => {
       if (on) chosen.tags.push(t);
       else chosen.tags = chosen.tags.filter(x => x !== t);
@@ -58,12 +59,12 @@ export default async function renderSetup({ view, args, go, ctx }) {
   const available = el('p', { class: 'muted' });
   const startBtn = el('button', { class: 'primary', onclick: () => {
     settings.set('grading', grading.value);
-    start(go, ctx, { mode: 'practice', ...chosen, grading: grading.value }, states);
+    start(go, ctx, { mode: 'practice', section, ...chosen, grading: grading.value }, states);
   } }, '開始');
 
   function opts() {
     return {
-      mode: 'practice', ...chosen,
+      mode: 'practice', section, ...chosen,
       merge: settings.get('mergeDuplicates'),
     };
   }
@@ -102,26 +103,28 @@ function toggleChip(label, onToggle) {
   return c;
 }
 
-function examSetup(view, go, ctx) {
+function examSetup(view, go, ctx, section) {
+  const info = data.sectionInfo(section);
   view.append(el('div', { class: 'card' },
-    el('h2', { text: '本番モード' }),
+    el('h2', { text: `本番モード — ${info.label}` }),
     el('ul', { class: 'muted' },
-      el('li', { text: '25問 / 40分。実際の午前IIと同じ条件' }),
+      el('li', { text: `${info.count}問 / ${info.minutes}分。実際の試験と同じ条件` }),
       el('li', { text: '解答中は正誤も解説も出ない。中断・巻き戻しなし' }),
-      el('li', { text: '合格ラインは60%（15問正解）' }),
+      el('li', { text: `合格ラインは60%（${Math.ceil(info.count * 0.6)}問正解）` }),
       el('li', { text: '再出題された問題も回ごとに別問題として扱う' })),
     el('div', { class: 'row' },
       el('button', { class: 'primary', onclick: async () =>
-        start(go, ctx, { mode: 'exam' }, (await data.allStates()) || []) }, '開始する'),
+        start(go, ctx, { mode: 'exam', section },
+              (await data.allStates()) || []) }, '開始する'),
       el('button', { onclick: () => go('home') }, '戻る'))));
 }
 
-function sessionSetup(view, go, ctx, states) {
+function sessionSetup(view, go, ctx, states, section) {
   const list = el('div', { class: 'grid two' });
-  for (const s of data.sessions()) {
+  for (const s of data.sessionsIn(section)) {
     list.append(el('button', {
       onclick: () => start(go, ctx, {
-        mode: 'session', sessionId: s.id, sessionLabel: s.label,
+        mode: 'session', section, sessionId: s.id, sessionLabel: s.label,
       }, states),
     }, s.label));
   }
@@ -133,6 +136,7 @@ function sessionSetup(view, go, ctx, states) {
 
 function start(go, ctx, opts, states) {
   const merged = {
+    section: settings.get('section'),
     merge: settings.get('mergeDuplicates'),
     shuffleChoices: settings.get('shuffleChoices'),
     ...opts,
