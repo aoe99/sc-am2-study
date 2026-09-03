@@ -1,0 +1,503 @@
+#!/usr/bin/env python3
+"""Stage 4 — split OCR lines into 問1..25, each with its four choices.
+
+Vision returns one observation per printed line with a normalised box, so the
+split is driven by geometry as much as by text: 問N headings sit in the
+leftmost column, choice markers one indent in, and continuation lines one
+indent further still.  Anything inside a question that belongs to none of
+those is figure/table artwork, which gets flagged and cropped in stage 5.
+
+    python3 tools/04_parse.py [session ...]
+"""
+from __future__ import annotations
+import difflib, json, re, sys, unicodedata
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from sclib import (SESSION_IDS, CHOICE_KEYS, BUILD, PDFTOOL, clean,
+                   pdf_path, run_tool, write_json)
+import tempfile
+
+CORR = json.loads((Path(__file__).resolve().parent / "corrections.json")
+                  .read_text(encoding="utf-8"))
+FIXES = [(re.compile(r["pattern"], re.M), r["repl"], r["why"])
+         for r in CORR["replacements"]]
+FLAGS = [(re.compile(f["pattern"], re.M), f["label"]) for f in CORR["flagPatterns"]]
+applied: dict[str, int] = {}
+
+
+def _vocab() -> set:
+    """English words as the 読者特典 explanations spell them.
+
+    Those come out of the PDF with no OCR involved, so they are a free
+    domain dictionary — enough to tell "Authent ication" (a glyph gap Vision
+    read as a space) from "Pass the" (a real one)."""
+    path = BUILD / "explanations.json"
+    if not path.exists():
+        return set()
+    data = json.loads(path.read_text(encoding="utf-8"))
+    out = set()
+    for sess in data.values():
+        for q in sess.values():
+            out |= {w.lower() for w in
+                    re.findall(r"[A-Za-z][A-Za-z0-9]{4,}", q["explanation"])}
+    return out
+
+
+VOCAB = _vocab()
+rejoined: dict[str, int] = {}
+
+
+def rejoin_split_words(s: str) -> str:
+    def fix(m):
+        parts = m.group(0).split(" ")
+        out, i = [], 0
+        while i < len(parts):
+            hit = next((j for j in range(len(parts), i + 1, -1)
+                        if "".join(parts[i:j]).lower() in VOCAB), None)
+            if hit:
+                joined = "".join(parts[i:hit])
+                rejoined[joined] = rejoined.get(joined, 0) + 1
+                out.append(joined); i = hit
+            else:
+                out.append(parts[i]); i += 1
+        return " ".join(out)
+    return re.sub(r"[A-Za-z]{2,}(?: [A-Za-z]{1,7}){1,3}", fix, s)
+
+# The number runs straight into the sentence often enough ("問18" + "1台の
+# サーバ…" → 問181台) that no digit boundary can be trusted here; capture the
+# whole run and let the 1..25 sequence decide where the number ends.
+HEAD = re.compile(r"^[問間]\s*(\d{1,3})")
+PAGE_NO = re.compile(r"^[\s\-–—ー−=_]*\d{1,3}[\s\-–—ー−=_]*$")
+# Vision confuses these with the choice markers: エ/工 (katakana vs kanji) and
+# イ/1 are the two that actually bite.
+ALIAS = {"ア": "アァ", "イ": "イィ1lＩ", "ウ": "ウゥワヮ", "エ": "エェ工ヱ"}
+# Figure and table blocks are introduced by a bracketed caption when they have one.
+CAPTION = re.compile(r"^[〔［【\[（(]")
+# "図" and "表" occur inside ordinary words (地図, 発表, 表示); only count them
+# when the sentence is pointing at an actual exhibit.
+FIGREF = re.compile(r"(?:次の[図表]|[下上左右本]図|図中|(?<![地海系意合構星版縮])図[のにはを]|[図表]\s?\d"
+                    r"|[下上]表|表中|(?<![発公代年別])表[のにはを]|〔[^〕]*〕|次に示す)")
+
+CJK = r"　-〿぀-ヿ㐀-䶿一-鿿＀-￯"
+
+
+def norm(s: str) -> str:
+    """Normalise OCR output of an IPA booklet.
+
+    IPA typesets 読点 as "，" throughout; Vision reads many of them as "、"
+    (tesseract independently read every one of them as a comma glyph, which
+    is what settles it).  Latin runs are printed with padding spaces that
+    Vision keeps only sometimes, so those are dropped for consistency.
+    """
+    s = clean(s)
+    s = s.replace("、", "，").replace("｡", "。").replace("､", "，")
+    s = s.replace("―", "—").replace("~", "〜")
+    s = re.sub(rf"(?<=[{CJK}]) +", "", s)
+    s = re.sub(rf" +(?=[{CJK}])", "", s)
+    if VOCAB:
+        s = rejoin_split_words(s)
+    for rx, repl, why in FIXES:
+        s, n = rx.subn(repl, s)
+        if n:
+            applied[why] = applied.get(why, 0) + n
+    return s.strip()
+
+
+DROP_SKIP = re.compile(r"[\s，,、。．.・:：]")
+recovered: list[str] = []
+rejected: list[str] = []
+
+
+def _confirm(pdf, page: int, line: dict, seg: str) -> bool:
+    """Re-read one line at 600dpi to arbitrate a Vision/tesseract disagreement.
+
+    tesseract hallucinates too, so a character it alone reports is not enough.
+    Cropping just the line makes the glyph far larger relative to the frame,
+    and Vision reliably picks up what it skipped at full-page scale.
+    """
+    x = max(0.0, line["x"] - 0.02)
+    y = max(0.0, line["y"] - 0.012)
+    w = min(1.0 - x, line["w"] + 0.05)
+    h = min(1.0 - y, line["h"] + 0.024)
+    with tempfile.TemporaryDirectory() as td:
+        out = Path(td) / "line.png"
+        try:
+            run_tool("crop", pdf, page, f"{x:.5f}", f"{y:.5f}",
+                     f"{w:.5f}", f"{h:.5f}", out, "--dpi", "600")
+            return seg in run_tool("ocr", out)
+        except Exception:
+            return False
+
+
+def repair_dropped(pages: list[dict], pdf) -> None:
+    """Put back characters Vision lost that the second engine did read.
+
+    Vision occasionally swallows a glyph — 「信」 in 通信/受信 especially — and
+    nothing about the surviving text looks wrong, so the only way to notice is a
+    second opinion.  Every candidate is then confirmed by re-reading the line.
+    """
+    for pn, page in enumerate(pages, 1):
+        second = page.get("tesseract")
+        if not second:
+            continue
+        chars, owner = [], []
+        for li, l in enumerate(page["lines"]):
+            for ci, c in enumerate(l["text"]):
+                if not DROP_SKIP.match(c):
+                    chars.append(unicodedata.normalize("NFC", c))
+                    owner.append((li, ci))
+        ref = [c for c in unicodedata.normalize("NFC", second) if not DROP_SKIP.match(c)]
+        if len(chars) < 200:
+            continue
+        edits = []
+        sm = difflib.SequenceMatcher(None, chars, ref, autojunk=False)
+        for tag, i1, i2, j1, j2 in sm.get_opcodes():
+            if tag != "insert" or not 1 <= j2 - j1 <= 2 or i1 >= len(owner):
+                continue
+            seg = "".join(ref[j1:j2])
+            if not all("\u4e00" <= c <= "\u9fff" for c in seg):
+                continue
+            li, ci = owner[i1]
+            if _confirm(pdf, pn, page["lines"][li], seg):
+                edits.append(((li, ci), seg))
+            else:
+                rejected.append(f"p{pn} 『{seg}』（再読取で確認できず・不採用）")
+        for (li, ci), seg in sorted(edits, reverse=True):
+            t = page["lines"][li]["text"]
+            page["lines"][li]["text"] = t[:ci] + seg + t[ci:]
+            recovered.append(f"p{pn} 『{seg}』 → …{t[max(0, ci - 10):ci]}[{seg}]{t[ci:ci + 10]}…")
+
+
+def load(sid: str) -> list[dict]:
+    pages = json.loads((BUILD / "ocr" / f"{sid}.json").read_text(encoding="utf-8"))
+    repair_dropped(pages, pdf_path(sid, "1問題"))
+    out = []
+    for pi, page in enumerate(pages, 1):
+        for li, l in enumerate(page["lines"]):
+            t = l["text"].strip()
+            if not t or PAGE_NO.match(t):
+                continue
+            out.append({"page": pi, "i": li, "text": t,
+                        "x": l["x"], "y": l["y"], "w": l["w"], "h": l["h"]})
+    return out
+
+
+def find_headings(lines: list[dict]) -> dict[int, int]:
+    """Map 問番号 → line index for the 25 headings.
+
+    The heading number is the one spot where a single bad glyph costs a whole
+    question, so the scan tolerates two kinds of damage: a number that picked up
+    a stray digit ("問9 3層…" reads as 問93), and a heading OCR missed entirely,
+    which is recovered afterwards from the space it left in the left column.
+    """
+    cands = [(i, HEAD.match(l["text"]).group(1))
+             for i, l in enumerate(lines) if HEAD.match(l["text"])]
+    if not cands:
+        return {}
+    left = min(lines[i]["x"] for i, _ in cands)
+    # Headings share the leftmost column; body text sits a full indent further in.
+    margin = left + 0.06
+    cands = [(i, n) for i, n in cands if lines[i]["x"] <= margin]
+    # The gap-filler must not reach past the heading column into wrapped body
+    # text, so bound it by the headings actually seen rather than by `margin`.
+    head_x = max((lines[i]["x"] for i, _ in cands), default=margin) + 0.008
+
+    def scan(pool, loose):
+        got: dict[int, int] = {}
+        want = 1
+        for i, ds in pool:
+            if want > 25:
+                break
+            if ds == str(want):
+                got[want] = i; want += 1
+            elif loose and ds.startswith(str(want)):
+                got[want] = i; want += 1
+            elif loose and ds.isdigit() and want < int(ds) <= 25:
+                got[int(ds)] = i; want = int(ds) + 1   # a heading was missed
+        return got
+
+    # A "問1～問25" line on the cover can steal the first slot; if the run comes
+    # up short, drop whichever candidate it grabbed first and try again.
+    best: dict[int, int] = {}
+    for loose in (False, True):
+        pool = cands
+        for _ in range(4):
+            got = scan(pool, loose)
+            if len(got) == 25:
+                return got
+            if len(got) > len(best):
+                best = got
+            if not got:
+                break
+            pool = [(i, n) for i, n in pool if i != min(got.values())]
+
+    # Whatever is still missing lost its 問N to OCR, but the heading itself is
+    # still the only line sitting alone in the left column between its neighbours.
+    taken = set(best.values())
+    for miss in [n for n in range(1, 26) if n not in best]:
+        lo = max((best[n] for n in range(miss - 1, 0, -1) if n in best), default=-1)
+        hi = min((best[n] for n in range(miss + 1, 26) if n in best), default=len(lines))
+        slot = next((j for j in range(lo + 1, hi)
+                     if lines[j]["x"] <= head_x and j not in taken), None)
+        if slot is not None:
+            best[miss] = slot; taken.add(slot)
+    return best
+
+
+def _marker(line: dict, key: str) -> bool:
+    """Does this line open a choice?  Bare markers count: when the choices are
+    laid out as a table the ア sits alone in its own cell."""
+    t = line["text"].strip()
+    return bool(t) and t[0] in ALIAS[key]
+
+
+def _bare(line: dict) -> bool:
+    """A marker alone on its line — the choice body is table artwork."""
+    return len(line["text"].strip()) == 1
+
+
+def _consistent(block: list[dict], idx: list[int]) -> bool:
+    xs = [block[j]["x"] for j in idx]
+    ys = [block[j]["y"] for j in idx]
+    base = min(xs)
+    # Single column: every marker sits in the same 1.3%-of-page-wide gutter.
+    # Continuation lines are indented about twice that, so they fall out here.
+    if max(xs) - base < 0.013:
+        return True
+    # 2- or 4-across: markers share a baseline band and step to the right.
+    rows = len({round(y / 0.02) for y in ys})
+    return (rows < 4
+            and all(b >= a - 0.012 for a, b in zip(ys, ys[1:]))
+            and all(x >= base - 0.013 for x in xs))
+
+
+def _assign(block: list[dict], cands: dict[str, list[int]]) -> list[int] | None:
+    for e in reversed(cands["エ"]):
+        for u in reversed([j for j in cands["ウ"] if j < e]):
+            for i in reversed([j for j in cands["イ"] if j < u]):
+                for a in reversed([j for j in cands["ア"] if j < i]):
+                    if _consistent(block, [a, i, u, e]):
+                        return [a, i, u, e]
+    return None
+
+
+def find_markers(block: list[dict], flags: list[str]) -> list[int] | None:
+    """Indices of the ア/イ/ウ/エ markers.
+
+    Both a wrapped choice ("…マルウェ" / "ア感染を検知する。") and a figure label
+    ("アプリケーション層") look exactly like an ア marker in the text alone, so
+    candidates are searched as a whole assignment and kept only when the four
+    line up in a column — or in a proper multi-column row.
+    """
+    cands = {k: [j for j in range(1, len(block)) if _marker(block[j], k)]
+             for k in CHOICE_KEYS}
+    if all(cands.values()):
+        got = _assign(block, cands)
+        if got:
+            return got
+
+    # Vision sometimes drops the marker glyph itself, leaving the choice text
+    # starting one full-width character further in than a wrapped line would.
+    for n, miss in enumerate(CHOICE_KEYS):
+        others = {k: v for k, v in cands.items() if k != miss}
+        if not all(others.values()):
+            continue
+        partial = _assign_partial(block, cands, miss)
+        if partial:
+            flags.append(f"選択肢{miss}のマーカーが読めず位置から補完")
+            return partial
+    return None
+
+
+def _assign_partial(block, cands, miss):
+    keys = [k for k in CHOICE_KEYS if k != miss]
+    n = CHOICE_KEYS.index(miss)
+    combos = [[]]
+    for k in keys:
+        combos = [c + [j] for c in combos for j in reversed(cands[k])
+                  if not c or j > c[-1]]
+        if len(combos) > 400:
+            combos = combos[:400]
+    for combo in combos:
+        cols = [block[j]["x"] for j in combo]
+        lo = combo[n - 1] if n else 0
+        hi = combo[n] if n < len(combo) else len(block)
+        span = list(range(lo + 1, hi))
+        # Three ways a marker goes missing, most specific first: the glyph was
+        # dropped and the text starts a character further right; the glyph was
+        # misread into something unrecognisable but still sits in the column;
+        # or the whole line landed somewhere only its position can vouch for.
+        slot = next((j for j in span
+                     if any(c + 0.028 <= block[j]["x"] <= c + 0.052 for c in cols)), None)
+        if slot is None:
+            slot = next((j for j in span
+                         if any(abs(block[j]["x"] - c) <= 0.013 for c in cols)), None)
+        if slot is None:
+            slot = next((j for j in span
+                         if block[j]["x"] >= min(cols) - 0.013), None)
+        if slot is None:
+            continue
+        idx = combo[:n] + [slot] + combo[n:]
+        # Judge the layout on the markers actually seen — the recovered one is
+        # a full glyph-width to their right by definition.
+        if all(a < b for a, b in zip(idx, idx[1:])) and _consistent(block, combo):
+            return idx
+    return None
+
+
+def split_figure(qblock: list[dict], base_x: float):
+    """Peel a figure/table off the tail of the question-text lines."""
+    for n, ln in enumerate(qblock):
+        if n and (ln["x"] > base_x + 0.15 or CAPTION.match(ln["text"])):
+            return qblock[:n], qblock[n:]
+    return qblock, []
+
+
+def split_choices(block: list[dict], flags: list[str]):
+    """Return (question_lines, {key: [lines]}, figure_lines)."""
+    idx = find_markers(block, flags)
+    if idx is None:
+        flags.append("選択肢ア〜エを特定できない")
+        return block, {}, [], [], False
+    qlines, figure = split_figure(block[:idx[0]], block[0]["x"])
+    choices: dict[str, list[dict]] = {}
+    for n, key in enumerate(CHOICE_KEYS):
+        start = idx[n]
+        stop = idx[n + 1] if n + 1 < len(idx) else len(block)
+        body = [block[start]]
+        for j in range(start + 1, stop):
+            if block[j]["x"] >= block[start]["x"] - 0.012:
+                body.append(block[j])
+        choices[key] = body
+    used = {id(l) for ls in choices.values() for l in ls}
+    used |= {id(l) for l in qlines} | {id(l) for l in figure}
+    spare = [(n, l) for n, l in enumerate(block) if id(l) not in used]
+    # Unclaimed lines still inside the choice run are artwork; anything past the
+    # final choice is the booklet's back matter (メモ用紙, 注意事項, 商標表示).
+    inter = [l for n, l in spare if idx[0] < n < idx[-1]]
+    figure += [l for n, l in spare if n < idx[-1]]
+    trailing = [l for n, l in spare if n > idx[-1]]
+    return qlines, choices, figure, trailing, bool(inter)
+
+
+def join(lines: list[dict]) -> str:
+    """Concatenate wrapped OCR lines back into one run of prose."""
+    parts = [norm(l["text"]) for l in lines]
+    out = ""
+    for part in parts:
+        if not part:
+            continue
+        if out and out[-1].isascii() and out[-1].isalnum() \
+                and part[0].isascii() and part[0].isalnum():
+            out += " "
+        out += part
+    return out.strip()
+
+
+def parse(sid: str) -> list[dict]:
+    lines = load(sid)
+    heads = find_headings(lines)
+    # メモ用紙 and the 注意事項 sheet sit after the last question; keeping them
+    # would let the final choice swallow the whole back matter.
+    if heads:
+        idxs = list(heads.values())
+        span = range(min(lines[i]["page"] for i in idxs),
+                     max(lines[i]["page"] for i in idxs) + 1)
+        keep = [n for n, l in enumerate(lines) if l["page"] in span]
+        remap = {old: new for new, old in enumerate(keep)}
+        lines = [lines[n] for n in keep]
+        heads = {no: remap[i] for no, i in heads.items() if i in remap}
+    if len(heads) != 25:
+        print(f"  ! {sid}: 見出し {len(heads)}/25 件しか検出できず")
+    order = sorted(heads)
+    out = []
+    for k, no in enumerate(order):
+        hi = heads[no]
+        end = heads[order[k + 1]] if k + 1 < len(order) else len(lines)
+        block = lines[hi:end]
+        m = HEAD.match(block[0]["text"])
+        flags: list[str] = []
+        if m is None:
+            flags.append("見出し行を認識できず位置から補完")
+        elif not m.group(1).startswith(str(no)):
+            flags.append(f"見出し番号の誤認識（『{m.group(1)}』と読めた）")
+        stripped = dict(block[0])
+        stripped["text"] = re.sub(rf"^[問間]\s*{no}\s*", "", block[0]["text"], count=1)
+        block = [stripped] + block[1:]
+        qlines, choices, figure, trailing, interleaved = split_choices(block, flags)
+        # Bare markers mean a table; artwork between the markers means the
+        # choices themselves are drawn (2-D formulas, diagrams).
+        table_choices = bool(choices) and (
+            interleaved or any(_bare(v[0]) for v in choices.values()))
+
+        text = join(qlines)
+        ch = {key: norm(join(v)[1:].lstrip(" 　")) for key, v in choices.items()} if choices else {}
+        if choices and any(not v for v in ch.values()):
+            flags.append("空の選択肢がある")
+        if table_choices:
+            flags.append("選択肢が表形式（画像化）")
+        if len(text) < 10:
+            flags.append(f"問題文が短すぎる({len(text)}字)")
+        hay = text + "\n" + "\n".join(ch.values())
+        flags += [label for rx, label in FLAGS if rx.search(hay)]
+        mentions = bool(FIGREF.search(text))
+        # A pure line drawing yields no OCR lines at all, only a hole in the page.
+        holes = []
+        seq = qlines + figure + [l for k in CHOICE_KEYS for l in choices.get(k, [])]
+        for a, b in zip(seq, seq[1:]):
+            if b["page"] == a["page"] and b["y"] - (a["y"] + a["h"]) > 0.05:
+                holes.append([a["page"], round(a["y"] + a["h"], 4), round(b["y"], 4)])
+        if mentions and not figure and not holes:
+            flags.append("本文が図表に言及しているが図表領域を検出できず")
+        out.append({
+            "no": no, "text": text, "choices": ch,
+            "pages": sorted({l["page"] for l in block}),
+            "figureLines": [{k: l[k] for k in ("page", "x", "y", "w", "h", "text")}
+                            for l in figure],
+            "choiceBoxes": {k: [{kk: l[kk] for kk in ("page", "x", "y", "w", "h")}
+                                for l in v] for k, v in choices.items()},
+            # The marker's own box: in a table it sits vertically centred in its
+            # row, which is the only reliable anchor for cropping that row.
+            "markerBoxes": {k: {kk: v[0][kk] for kk in ("page", "x", "y", "w", "h")}
+                            for k, v in choices.items() if v},
+            "tableChoices": table_choices,
+            "mentionsFigure": mentions,
+            "holes": holes,
+            "trailingDropped": len(trailing),
+            "needsFigure": bool(figure) or bool(holes),
+            "flags": flags,
+        })
+    return out
+
+
+def main() -> None:
+    targets = sys.argv[1:] or SESSION_IDS
+    result = {}
+    for sid in targets:
+        qs = parse(sid)
+        result[sid] = qs
+        nf = sum(1 for q in qs if q["flags"])
+        fig = sum(1 for q in qs if q["figureLines"])
+        print(f"{sid:9} {len(qs):2}/25  要確認 {nf:2}  図表候補 {fig:2}")
+        for q in qs:
+            if q["flags"]:
+                print(f"    問{q['no']}: {'; '.join(q['flags'])}")
+    if rejoined:
+        top = sorted(rejoined.items(), key=lambda kv: -kv[1])[:8]
+        print(f"\n分断された英単語を解説の語彙で復元 {sum(rejoined.values())} 件: "
+              + ", ".join(f"{w}×{n}" for w, n in top))
+    if rejected:
+        print(f"\n不採用（tesseractのみが読んだ文字）{len(rejected)} 件")
+    if recovered:
+        print(f"\n第2エンジン(tesseract)から補完した脱落文字 {len(recovered)} 件:")
+        for r in recovered:
+            print("  ", r)
+    if applied:
+        print("\n補正辞書の適用:")
+        for why, n in sorted(applied.items(), key=lambda kv: -kv[1]):
+            print(f"  {n:3} 件  {why}")
+    write_json(BUILD / "parsed.json", result)
+
+
+if __name__ == "__main__":
+    main()

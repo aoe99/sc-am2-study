@@ -1,0 +1,249 @@
+{
+  "_comment": "OCR の既知の誤認識を直す。pattern は Python 正規表現、repl は置換文字列。適用件数は 04_parse.py が報告する。自由に追記してよい。",
+  "replacements": [
+    {
+      "pattern": "口(?=[ァ-ヶー])",
+      "repl": "ロ",
+      "why": "漢字『口』とカタカナ『ロ』の取り違え（ログイン等）"
+    },
+    {
+      "pattern": "(?<=[ァ-ヶー])口",
+      "repl": "ロ",
+      "why": "同上（末尾側）"
+    },
+    {
+      "pattern": "(?<![A-Za-z])HITP(?![A-Za-z])",
+      "repl": "HTTP",
+      "why": "TT の連続を IT と誤読"
+    },
+    {
+      "pattern": "(?<![A-Za-z])HTIP(?![A-Za-z])",
+      "repl": "HTTP",
+      "why": "同上"
+    },
+    {
+      "pattern": "(?<![A-Za-z])SOL(?=\\s*インジェクション)",
+      "repl": "SQL",
+      "why": "Q を O と誤読"
+    },
+    {
+      "pattern": "(?<![A-Za-z])D0M(?![A-Za-z])",
+      "repl": "DOM",
+      "why": "O を 0 と誤読"
+    },
+    {
+      "pattern": "(?<![A-Za-z])S0AP(?![A-Za-z])",
+      "repl": "SOAP",
+      "why": "同上"
+    },
+    {
+      "pattern": "危発化",
+      "repl": "危殆化",
+      "why": "ルビ付き『殆』の誤読"
+    },
+    {
+      "pattern": "(?<=[0-9]) 0/tcp",
+      "repl": "0/tcp",
+      "why": "ポート番号中の空白"
+    },
+    {
+      "pattern": "TW及び®",
+      "repl": "™及び®",
+      "why": "商標記号の誤読"
+    },
+    {
+      "pattern": "^間(?=\\s*\\d)",
+      "repl": "問",
+      "why": "『問』を『間』と誤読"
+    },
+    {
+      "pattern": "攻擎",
+      "repl": "攻撃",
+      "why": "『撃』を『擎』と誤読（ページ画像で確認済み）"
+    },
+    {
+      "pattern": "億の(?=DNS|情報|データ)",
+      "repl": "偽の",
+      "why": "『偽』を『億』と誤読（ページ画像で確認済み）"
+    },
+    {
+      "pattern": "Registrat ion",
+      "repl": "Registration",
+      "why": "英単語がスペースで分断"
+    },
+    {
+      "pattern": "Certificat ion",
+      "repl": "Certification",
+      "why": "同上"
+    },
+    {
+      "pattern": "Informat ion",
+      "repl": "Information",
+      "why": "同上"
+    },
+    {
+      "pattern": "Authorizat ion",
+      "repl": "Authorization",
+      "why": "同上"
+    },
+    {
+      "pattern": "Authenticat ion",
+      "repl": "Authentication",
+      "why": "同上"
+    },
+    {
+      "pattern": "Proot ing",
+      "repl": "Proofing",
+      "why": "『f』を『t』と誤読＋英単語の分断"
+    },
+    {
+      "pattern": "Proot(?![a-z])",
+      "repl": "Proof",
+      "why": "『f』を『t』と誤読"
+    },
+    {
+      "pattern": "(?<=[通送受返])[言倉備宿]",
+      "repl": "信",
+      "why": "『信』を言/倉/備/宿と誤読（通信・送信・受信）"
+    },
+    {
+      "pattern": "送[言倉備宿]元",
+      "repl": "送信元",
+      "why": "同上（送信元）"
+    },
+    {
+      "pattern": "送信示",
+      "repl": "送信元",
+      "why": "『元』を『示』と誤読"
+    },
+    {
+      "pattern": "[施能胎龍朧驚縮脱]弱性",
+      "repl": "脆弱性",
+      "why": "『脆弱性』の『脆』を誤読"
+    },
+    {
+      "pattern": "探素",
+      "repl": "探索",
+      "why": "『索』を『素』と誤読"
+    },
+    {
+      "pattern": "(?<=[，,。\\s])完のメッセージ",
+      "repl": "元のメッセージ",
+      "why": "『元』を『完』と誤読"
+    },
+    {
+      "pattern": "(?<=ハッシュ値の)示のメッセージ",
+      "repl": "元のメッセージ",
+      "why": "『元』を『示』と誤読"
+    },
+    {
+      "pattern": "(?<![A-Za-z])ICP(?=接続)",
+      "repl": "TCP",
+      "why": "『T』を『I』と誤読"
+    },
+    {
+      "pattern": "デイジタル",
+      "repl": "デジタル",
+      "why": "『ジ』を『イジ』と誤読"
+    },
+    {
+      "pattern": "ブロトコル",
+      "repl": "プロトコル",
+      "why": "半濁点の誤読"
+    },
+    {
+      "pattern": "バスワード",
+      "repl": "パスワード",
+      "why": "半濁点の誤読"
+    },
+    {
+      "pattern": "ヘツダ",
+      "repl": "ヘッダ",
+      "why": "促音の大書き誤読"
+    },
+    {
+      "pattern": "レスポンタ(?=の|と|間)",
+      "repl": "レスポンダ",
+      "why": "濁点の脱落"
+    },
+    {
+      "pattern": "サイスが大きい",
+      "repl": "サイズが大きい",
+      "why": "濁点の脱落"
+    },
+    {
+      "pattern": "狙罪",
+      "repl": "犯罪",
+      "why": "『犯』を『狙』と誤読"
+    },
+    {
+      "pattern": "係サイト",
+      "repl": "偽サイト",
+      "why": "『偽』を『係』と誤読"
+    },
+    {
+      "pattern": "(?<![A-Za-z])DD(?:os|OS|Os)(?![A-Za-z])",
+      "repl": "DDoS",
+      "why": "大文字小文字の誤読"
+    },
+    {
+      "pattern": "(?<![A-Za-z])os(?=\\s*の既知)",
+      "repl": "OS",
+      "why": "小文字と誤読"
+    },
+    {
+      "pattern": "バクを摘出",
+      "repl": "バグを摘出",
+      "why": "濁点の誤読"
+    },
+    {
+      "pattern": "SNMP[VyY](?=\\d)",
+      "repl": "SNMPv",
+      "why": "SNMPのバージョン表記の誤読"
+    },
+    {
+      "pattern": "(?<![A-Za-z])iP(?=[アドレス])",
+      "repl": "IP",
+      "why": "『IP』の I を小文字と誤読"
+    },
+    {
+      "pattern": "(?<![A-Za-z])[Il](?=Pアドレス)",
+      "repl": "I",
+      "why": "同上"
+    }
+  ],
+  "flagPatterns": [
+    {
+      "pattern": "[Ａ-Ｚａ-ｚ０-９]",
+      "label": "全角英数字"
+    },
+    {
+      "pattern": "[ｱ-ﾝ]",
+      "label": "半角カナ"
+    },
+    {
+      "pattern": "[a-zA-Z]{3,}\\s+(?!(?:the|of|in|to|is|as|at|on|and|for|by|an|or|be|it|we|no|up|if|do|so|a)(?![a-z]))[a-z]{1,3}(?![a-zA-Z])",
+      "label": "英単語の分断疑い"
+    },
+    {
+      "pattern": "(.)\\1{4,}",
+      "label": "同一文字の連続"
+    },
+    {
+      "pattern": "[”“][^”“]{0,3}[，,]\\s*[”“]",
+      "label": "引用符内が短すぎる"
+    },
+    {
+      "pattern": "[0-9]{1,2}[oO][0-9]",
+      "label": "0/O の混同疑い"
+    },
+    {
+      "pattern": "[①-⑳]{2,}",
+      "label": "丸数字の連続"
+    },
+    {
+      "pattern": "[\\u3000]",
+      "label": "全角スペース"
+    }
+  ]
+}

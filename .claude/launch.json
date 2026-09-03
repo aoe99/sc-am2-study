@@ -1,0 +1,14 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "app",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": [
+        "/Users/straycat/Desktop/claude/secspe/tools/serve.py",
+        "8765"
+      ],
+      "port": 8765
+    }
+  ]
+}
