@@ -13,8 +13,12 @@ export default async function renderHome({ view, extra, go }) {
   if (!secs.some(s => s.id === section)) section = settings.set('section', secs[0].id);
   const info = data.sectionInfo(section);
   const qs = data.inSection(section);
-  const states = (await data.allStates()) || [];
-  const answers = (await data.allAnswers()) || [];
+  // Everything on this screen sits under the 午前Ⅰ/午前Ⅱ switch, so the record
+  // has to be narrowed to the paper being shown — otherwise the counts read as
+  // the same number whichever tab is selected.
+  const mine = new Set(qs.map(q => q.id));
+  const states = ((await data.allStates()) || []).filter(s => mine.has(s.questionId));
+  const answers = ((await data.allAnswers()) || []).filter(a => mine.has(a.questionId));
   const byId = new Map(states.map(s => [s.questionId, s]));
 
   const attempted = states.filter(s => s.attempts > 0);
