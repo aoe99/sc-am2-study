@@ -75,13 +75,18 @@ BOX_GLYPH = re.compile(r"[■□▪▫◼◻▢▣◾◽]+")
 NOTICE = re.compile(r"監督員|退室可能時間|問題冊子|試験開始の合図"
                     r"|試験問題に記載されている会社名|受験番号欄")
 
+# The rule either side of a page number is set as a dash, and Vision reads it
+# as any of these. Leaving one unlisted put "- 12 =" on the end of a 設問文.
+DASH = r"[-–—ー−ｰ=＝~〜_]"
+PAGE_NO = re.compile(rf"^{DASH}?\s*\d{{1,3}}\s*{DASH}?$")
+
 # Furniture: running heads, page numbers, and the sheets between 大問.
 FURNITURE = [
-    re.compile(r"^[-–—ー−]\s*\d{1,3}\s*[-–—ー−]?$"),
     re.compile(r"^問題は次のページに続く"),
     re.compile(r"^このページは白紙"),
     re.compile(r"^次のページに続く"),
-    re.compile(r"^[ー−\-]*\s*\d{1,3}\s*[ー−\-]*$"),
+    # Blank sheets for working out, bound between the 大問.
+    re.compile(r"^[〔［\[【（(]?\s*[メxXｘ×]モ用紙\s*[〕］\]】）)]?$"),
 ]
 
 # A gap wider than this between two fragments of one line is a 空欄 box, not
@@ -161,8 +166,9 @@ def load_rows(sid: str, paper: str) -> list[dict]:
                 and not any(is_setsu_head(r) for r in got)):
             continue                       # 注意事項のページ（表紙・裏表紙）
         for r in got:
-            # The page number sits in the bottom margin on every sheet.
-            if r["y"] > 0.92 and any(p.match(r["text"]) for p in FURNITURE):
+            # The page number sits in the bottom margin on every sheet. Anchor
+            # on that: a bare number elsewhere on the page is content.
+            if r["y"] > 0.88 and PAGE_NO.match(r["text"]):
                 continue
             if any(p.match(r["text"]) for p in FURNITURE):
                 continue
@@ -303,6 +309,61 @@ def build_body(rows: list[dict]) -> list[dict]:
     return [dict(b, text=fix(clean(b["text"]))) for b in out if clean(b["text"])]
 
 
+# A 解答群 is printed as a lettered list, often in two or three columns, and it
+# arrives as one unbroken run: "解答群アシステム運用担当者イシステム運用担当者と
+# システム開発者ウ…". Unreadable. The markers run in a fixed order, which is what
+# makes them findable: each is searched for only after the one before it.
+GROUP_MARKS = "アイウエオカキクケコサシスセソタチツテト"
+# Kanji and kana Vision returns in place of a marker.
+MARK_ALIAS = {"エ": "工", "オ": "才", "カ": "力", "ロ": "口", "ニ": "二",
+              "タ": "夕", "ハ": "八", "ト": "卜", "ク": "ワ"}
+GROUP_HEAD = re.compile(r"解答群")
+
+
+def format_group(text: str) -> str:
+    """Put each choice of a 解答群 on its own line.
+
+    The word appears twice: once in the question ("解答群の中から選び") and again
+    as the heading of the list itself. The heading is the later one, so the
+    occurrences are tried from the back, and one is only accepted when what
+    follows it really is a list — three markers in order, opening promptly, with
+    no question wording in between.
+    """
+    for i in reversed([m.start() for m in re.finditer("解答群", text)]):
+        head, body = text[:i], text[i + len("解答群"):]
+        hits: list[tuple[int, str]] = []
+        pos = 0
+        for mark in GROUP_MARKS:
+            alts = [mark] + ([MARK_ALIAS[mark]] if mark in MARK_ALIAS else [])
+            at = min((body.find(a, pos) for a in alts if body.find(a, pos) >= 0),
+                     default=-1)
+            if at < 0:
+                break
+            hits.append((at, mark))
+            pos = at + 1
+        if len(hits) < 3:
+            continue
+        # What sits between the heading and ア is the list's own column header
+        # ("記号 第1引数 第2引数"), never more of the question.
+        lead = body[:hits[0][0]]
+        if len(lead) > 30 or re.search(r"答えよ|選び|述べよ|入れる", lead):
+            continue
+        items = []
+        for k, (at, mark) in enumerate(hits):
+            end = hits[k + 1][0] if k + 1 < len(hits) else len(body)
+            # The gaps between the list's columns come through as empty boxes.
+            seg = clean(body[at + 1:end].replace("［　］", " ").replace("［ ］", " "))
+            if len(seg) < 2:
+                items = []
+                break                      # a marker matched inside a word
+            items.append(f"{mark} {seg}")
+        if not items:
+            continue
+        return "\n".join([clean(head), "解答群" + (" " + clean(lead) if lead.strip() else "")]
+                         + items)
+    return text
+
+
 def build_items(rows: list[dict]) -> list[dict]:
     items: list[dict] = []
     setsu = 0
@@ -336,7 +397,7 @@ def build_items(rows: list[dict]) -> list[dict]:
         if items:
             items[-1]["text"] += text
     for it in items:
-        it["text"] = fix(clean(it["text"]))
+        it["text"] = format_group(fix(clean(it["text"])))
         it["lead"] = fix(clean(it.get("lead") or ""))
     return [i for i in items if i["text"]]
 

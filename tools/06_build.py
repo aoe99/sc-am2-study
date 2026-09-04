@@ -125,8 +125,12 @@ def pm_commentary(comm: dict, setsu: int, sub) -> tuple[str, str | None]:
 # The frame of a box is read as its own fragment often enough that one printed
 # box arrives as two ("［c］［　］"), so both ends of the range absorb whatever
 # run of boxes and stray letters sits there.
-BOXISH = r"(?:［[^］]{0,3}］|■|[A-Za-zａ-ｚ]{1,2})"
-PM_RANGE = re.compile(rf"(?:{BOXISH}\s*){{1,3}}[~～ー−\-]\s*(?:{BOXISH}\s*){{1,3}}")
+# The left of the range has to be a real frame. Letters alone are not enough:
+# "XX-XX-XX-23-46-4a" in a 解答群 of MAC addresses is not a range of blanks, and
+# reading it as one rewrote an answer choice.
+BOX = r"(?:［[^］]{0,3}］|■)"
+BOXISH = rf"(?:{BOX}|[A-Za-zａ-ｚ]{{1,2}})"
+PM_RANGE = re.compile(rf"(?:{BOX}\s*){{1,3}}[~～ー−\-]\s*(?:{BOXISH}\s*){{1,3}}")
 
 
 def pm_fix_range(text: str, parts: list[dict]) -> str:
@@ -206,6 +210,13 @@ def build_pm(targets: list[str]) -> tuple[list, list, list]:
                         inotes.append("設問文が問題冊子から取れていない")
                     inotes += [label for rx, label in SUSPECT
                                if rx.search(ask.get("text", ""))]
+                    # Leftover frame glyphs mean a 空欄 was not read cleanly, and
+                    # the wording around it is usually damaged too.
+                    asked = ask.get("text", "")
+                    if re.search(r"[【】■□]", asked):
+                        inotes.append("空欄の枠が読み取れていない")
+                    if asked.count("［") != asked.count("］"):
+                        inotes.append("空欄の括弧の数が合わない")
                     body_expl = ex.get("bySetsu", {}).get(str(setsu), {})
                     questions.append({
                         "id": qid, "sessionId": sid, "section": "pm",

@@ -3,7 +3,7 @@
 import * as data from '../data.js';
 import * as engine from '../engine.js';
 import * as settings from '../settings.js';
-import { el, clear, toast } from '../ui.js';
+import { add, el, clear, toast } from '../ui.js';
 
 const COUNTS = [10, 25, 50, 0];   // 0 = 全問
 
@@ -97,7 +97,10 @@ export default async function renderSetup({ view, args, go, ctx }) {
     startBtn.disabled = list.length === 0;
   }
 
-  view.append(
+  // add() rather than view.append(): a conditional branch here yields null for
+  // the 区分 it does not apply to, and Element.append turns null into the text
+  // "null" on the page. add() drops it, the way el() does for its children.
+  add(view,
     el('div', { class: 'card' }, el('h2', { text: '出題数' }), countRow,
       written ? el('p', { class: 'muted', style: 'margin:8px 0 0' },
         '設問ごとに出題します。事例本文はいつでも開けます。') : null),
