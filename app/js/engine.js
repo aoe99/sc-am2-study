@@ -132,11 +132,39 @@ export function build(opts, states) {
   if (opts.merge && opts.mode !== 'exam') pool = dedupe(pool);
 
   const seed = (Date.now() ^ (pool.length * 2654435761)) >>> 0;
-  let list = shuffled(pool, seed);
   const want = opts.mode === 'exam' ? examConfig(opts.section).count : opts.count;
+
+  // 午後 is drawn a 事例 at a time even when the filter picked out scattered
+  // 設問. The Leitner box is per 設問 — that part was right — but the *reading*
+  // is per 事例: shuffling 設問 across 90 case studies means opening a fresh ten
+  // pages for every question, and the wording of one 設問 refers to the last.
+  // So the shuffle happens over 事例, and every 設問 of a 事例 that made the cut
+  // stays together and in the booklet's order.
+  // 午後 is counted in 事例, not 設問: a case study is 20 to 45 minutes of work
+  // and the number you want to sit down and do is a number of *those*.
+  if (data.isWritten(opts.section))
+    return { list: byCase(pool, seed, opts.caseCount), stateBy };
+
+  let list = shuffled(pool, seed);
   if (want && want > 0 && want < list.length) list = list.slice(0, want);
   return { list, stateBy };
 }
+
+/** Group the pool into 事例, shuffle those, and take `wantCases` of them whole. */
+export function byCase(pool, seed, wantCases) {
+  const buckets = new Map();
+  for (const q of pool) {
+    if (!buckets.has(q.caseId)) buckets.set(q.caseId, []);
+    buckets.get(q.caseId).push(q);
+  }
+  for (const items of buckets.values()) items.sort((a, b) => a.no - b.no);
+  let order = shuffled([...buckets.keys()], seed);
+  if (wantCases > 0) order = order.slice(0, wantCases);
+  return order.flatMap(id => buckets.get(id));
+}
+
+/** How many 事例 a filtered pool covers. */
+export const caseCountOf = list => new Set(list.map(q => q.caseId)).size;
 
 export function createRun(list, opts) {
   const written = data.isWritten(opts.section);

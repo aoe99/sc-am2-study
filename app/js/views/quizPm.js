@@ -27,7 +27,11 @@ export default async function renderQuizPm({ view, extra, go, ctx }) {
 
   let timerId = null;
   let showNav = false;
-  let showCase = run.mode === 'case' || run.mode === 'exam';
+  // Every run now arrives 事例 by 事例, so each one opens with its case study
+  // showing. Collapsing it is remembered while you stay in that 事例 and reset
+  // when the next one starts — you have to read the new one either way.
+  let showCase = true;
+  let seenCase = null;
   let viewing = -1;
 
   if (run.deadline) {
@@ -163,6 +167,11 @@ export default async function renderQuizPm({ view, extra, go, ctx }) {
     const q = data.byId(item.id);
     const c = data.caseOf(q);
     if (viewing !== run.index) { viewing = run.index; item.shownAt = Date.now(); }
+    if (c && c.id !== seenCase) { seenCase = c.id; showCase = true; }
+    // Where this 設問 sits inside its own 事例, which is the number that tells
+    // you how much of this case study is left.
+    const mine = run.items.filter(it => (data.byId(it.id) || {}).caseId === q.caseId);
+    const posInCase = mine.indexOf(item) + 1;
     clear(body);
     clear(nav);
 
@@ -171,6 +180,9 @@ export default async function renderQuizPm({ view, extra, go, ctx }) {
       .find(p => p.id === (c && c.paper));
     body.append(el('div', { class: 'qmeta' },
       el('span', { class: 'no', text: `${run.index + 1} / ${run.items.length}` }),
+      mine.length > 1
+        ? el('span', { class: 'chip static', text: `この事例 ${posInCase}/${mine.length}問` })
+        : null,
       sess ? el('span', { class: 'chip static' },
         `${sess.label}${paper ? ' ' + paper.label : ''} 問${c ? c.no : ''}`) : null,
       run.mode !== 'exam' && q.commentaryRate

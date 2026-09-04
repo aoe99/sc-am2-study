@@ -101,7 +101,7 @@ export default async function renderHome({ view, extra, go, ctx }) {
       el('h2', { text: 'モードを選ぶ' }),
       el('div', { class: 'grid two' },
         el('button', { class: 'primary', onclick: () => go('setup/practice') },
-          written ? '練習（設問ごと）' : '練習'),
+          written ? '練習（事例ごと）' : '練習'),
         el('button', { onclick: () => go('setup/exam') },
           written ? `本番 ${examSpan(info)}` : `本番 ${info.count}問${info.minutes}分`),
         el('button', {

@@ -5,7 +5,9 @@ import * as engine from '../engine.js';
 import * as settings from '../settings.js';
 import { add, el, clear, toast } from '../ui.js';
 
-const COUNTS = [10, 25, 50, 0];   // 0 = 全問
+const COUNTS = [10, 25, 50, 0];        // 0 = 全問
+// 午後 is counted in 事例: one is 20-45 minutes of reading and answering.
+const CASE_COUNTS = [1, 2, 3, 0];      // 0 = 全事例
 
 export default async function renderSetup({ view, args, go, ctx }) {
   const mode = args[0] || 'practice';
@@ -24,18 +26,19 @@ export default async function renderSetup({ view, args, go, ctx }) {
   }
 
   // --- practice ---
-  const chosen = { count: 25, sessionIds: [], tags: [], kinds: [],
+  const chosen = { count: 25, caseCount: 2, sessionIds: [], tags: [], kinds: [],
                    onlyUnseen: false, onlyWrong: false, onlyReused: false };
   const countRow = el('div', { class: 'chips' });
-  COUNTS.forEach(n => {
+  (written ? CASE_COUNTS : COUNTS).forEach(n => {
     const c = el('button', {
-      class: 'chip', 'aria-pressed': String(n === chosen.count),
+      class: 'chip',
+      'aria-pressed': String(n === (written ? chosen.caseCount : chosen.count)),
       onclick: () => {
-        chosen.count = n;
+        if (written) chosen.caseCount = n; else chosen.count = n;
         [...countRow.children].forEach(x => x.setAttribute('aria-pressed', String(x === c)));
         updateCount();
       },
-    }, n === 0 ? '全問' : `${n}問`);
+    }, written ? (n === 0 ? '全事例' : `${n}事例`) : (n === 0 ? '全問' : `${n}問`));
     countRow.append(c);
   });
 
@@ -91,7 +94,18 @@ export default async function renderSetup({ view, args, go, ctx }) {
     };
   }
   function updateCount() {
-    const { list } = engine.build({ ...opts(), count: 0 }, states);
+    const { list } = engine.build({ ...opts(), count: 0, caseCount: 0 }, states);
+    if (written) {
+      // The 設問 count is not promised here: which 事例 come up is decided when
+      // the run starts, and they differ in size. Naming a number now would just
+      // be a different one from what appears.
+      const cases = engine.caseCountOf(list);
+      const take = chosen.caseCount === 0 ? cases : Math.min(chosen.caseCount, cases);
+      available.textContent =
+        `該当 ${cases} 事例 / ${list.length} 設問 → ${take} 事例を出題`;
+      startBtn.disabled = list.length === 0;
+      return;
+    }
     const n = chosen.count === 0 ? list.length : Math.min(chosen.count, list.length);
     available.textContent = `該当 ${list.length} 問 → ${n} 問を出題`;
     startBtn.disabled = list.length === 0;
@@ -103,7 +117,8 @@ export default async function renderSetup({ view, args, go, ctx }) {
   add(view,
     el('div', { class: 'card' }, el('h2', { text: '出題数' }), countRow,
       written ? el('p', { class: 'muted', style: 'margin:8px 0 0' },
-        '設問ごとに出題します。事例本文はいつでも開けます。') : null),
+        '1つの事例を読んだら、その事例の設問を続けて解きます。'
+        + '事例をまたいで設問が混ざることはありません。') : null),
     el('div', { class: 'card' },
       el('h2', { text: '範囲' }),
       el('p', { class: 'muted', style: 'margin:0 0 6px' }, '年度（未選択なら全年度）'),
