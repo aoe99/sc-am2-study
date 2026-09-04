@@ -17,7 +17,16 @@ import { figure } from '../figures.js';
 // what gets shown: called out where it sits in the 事例, and made a way to jump
 // there from the 設問 that asks about it.
 const CIRCLED = /[①-⑳]/g;
+// Anything in the 事例 a 設問 can point at: a 下線's circled number, a 図/表 by
+// name, and a 空欄 whose letter the scan kept inside its frame.
+const ANCHOR = /[①-⑳]|［\s*([^］\s]{1,3})\s*］/g;
 const UNDERLINE_REF = /下線\s*([①-⑳])/g;
+const FIG_REF = /([図表])\s*([0-9０-９]{1,2})/g;
+const BLANK_REF = /［[^］]{0,3}］/g;
+const FW_DIGITS = { '０': '0', '１': '1', '２': '2', '３': '3', '４': '4',
+                    '５': '5', '６': '6', '７': '7', '８': '8', '９': '9' };
+const figLabel = (kind, no) =>
+  kind + [...no].map(ch => FW_DIGITS[ch] || ch).join('');
 
 const MARKS = [
   { value: true, label: '○ 正解', cls: 'ok' },
@@ -116,17 +125,22 @@ export default async function renderQuizPm({ view, extra, go, ctx }) {
     // though the printed underline is right there in the picture — so the crop
     // inherits the markers of the rows it replaced.
     const figMarks = new Map();
+    const figBlanks = new Map();
     body.forEach((b, i) => {
       if (b.kind !== 'caption' || !byCaption.has(b.text)) return;
       const marks = new Set();
+      const blanks = new Set();
       for (const step of [1, -1]) {
         for (let j = i + step; j >= 0 && j < body.length; j += step) {
           if (body[j].kind !== 'figure') break;
           hidden.add(j);
-          for (const m of body[j].text.matchAll(CIRCLED)) marks.add(m[0]);
+          for (const m of body[j].text.matchAll(ANCHOR)) {
+            if (m[1]) blanks.add(m[1]); else marks.add(m[0]);
+          }
         }
       }
       figMarks.set(i, marks);
+      figBlanks.set(i, blanks);
     });
     for (let i = 0; i < body.length; i++) {
       const b = body[i];
@@ -134,13 +148,23 @@ export default async function renderQuizPm({ view, extra, go, ctx }) {
         box.append(el('h3', { text: b.text }));
       } else if (b.kind === 'caption') {
         const fig = byCaption.get(b.text);
+        const m = FIG_REF.exec(b.text);
+        FIG_REF.lastIndex = 0;
+        const label = m && m.index === 0 ? figLabel(m[1], m[2]) : null;
         if (fig) {
           const node = await figure(fig.file);
           const marks = [...(figMarks.get(i) || [])].join('');
+          const blanks = [...(figBlanks.get(i) || [])];
           if (marks) node.dataset.ulines = marks;
+          if (blanks.length) node.dataset.blanks = `,${blanks.join(',')},`;
+          if (label) node.dataset.fig = label;
           box.append(node);
         }
-        box.append(marked(b.text, el('p', { class: 'cap' })));
+        const cap = marked(b.text, el('p', { class: 'cap' }));
+        // The caption carries the name too, so a 表 whose crop failed can still
+        // be reached — the reader lands on its fragments rather than nowhere.
+        if (label && !fig) cap.dataset.fig = label;
+        box.append(cap);
       } else if (b.kind === 'figure') {
         if (!hidden.has(i)) box.append(marked(b.text, el('pre', { class: 'figtext' })));
       } else {
@@ -150,31 +174,91 @@ export default async function renderQuizPm({ view, extra, go, ctx }) {
     return box;
   }
 
-  /** Fill a node with text, setting every 下線 marker apart and anchoring it. */
+  /** Fill a node with text, anchoring every 下線 marker and 空欄 in it. */
   function marked(text, node) {
     let last = 0;
-    for (const m of String(text).matchAll(CIRCLED)) {
+    for (const m of String(text).matchAll(ANCHOR)) {
       if (m.index > last) node.append(text.slice(last, m.index));
-      node.append(el('span', { class: 'uline', dataset: { uline: m[0] } }, m[0]));
+      node.append(m[1]
+        ? el('span', { class: 'uline blank', dataset: { blank: m[1] } }, m[0])
+        : el('span', { class: 'uline', dataset: { uline: m[0] } }, m[0]));
       last = m.index + m[0].length;
     }
     node.append(text.slice(last));
     return node;
   }
 
-  /** 設問文 with each "下線①" turned into a way to go and look at it. */
-  function questionText(text) {
+  /** Everything in this 事例 a 設問 could be sent to.
+   *
+   *  Read off the data, not the rendered page: the 事例 may be collapsed when
+   *  the 設問 is drawn, and a link that leads nowhere is worse than plain text.
+   */
+  function reachable(c) {
+    const keys = new Set();
+    if (!c) return keys;
+    for (const f of c.figures || []) if (f.label) keys.add(f.label);
+    for (const b of c.body || []) {
+      const m = FIG_REF.exec(b.text);
+      FIG_REF.lastIndex = 0;
+      if (b.kind === 'caption' && m && m.index === 0) keys.add(figLabel(m[1], m[2]));
+      for (const a of b.text.matchAll(ANCHOR)) keys.add(a[1] || a[0]);
+    }
+    return keys;
+  }
+
+  /** What a 設問 points at, in the order the wording mentions it. */
+  function anchorOf(kind, key) {
+    const box = body.querySelector('.casebody');
+    if (!box) return null;
+    if (kind === 'uline')
+      return box.querySelector(`[data-uline="${key}"]`)
+          || box.querySelector(`[data-ulines*="${key}"]`);
+    if (kind === 'fig') return box.querySelector(`[data-fig="${key}"]`);
+    return box.querySelector(`[data-blank="${key}"]`)
+        || box.querySelector(`[data-blanks*=",${key},"]`);
+  }
+
+  /** 設問文 with every reference into the 事例 made a way to go and look.
+   *
+   *  Three kinds: 下線① by its circled number, 図8 / 表2 by name, and ［ ］ by
+   *  the 空欄 it stands for. The blanks are only linked when the answer key's
+   *  labels line up with the markers in the wording — one label for one marker,
+   *  or a single label throughout — because a link to the wrong blank is worse
+   *  than none.
+   */
+  function questionText(text, parts, c) {
+    const keys = reachable(c);
+    const labels = (parts || []).map(p => p.label).filter(Boolean);
+    const blanks = [...String(text).matchAll(BLANK_REF)];
+    const mapped = labels.length
+      && (blanks.length === labels.length || labels.length === 1);
+    let seen = 0;
     const out = [];
     for (const line of String(text).split('\n')) {
+      const refs = [];
+      for (const m of line.matchAll(UNDERLINE_REF))
+        refs.push({ at: m.index, text: m[0], kind: 'uline', key: m[1] });
+      for (const m of line.matchAll(FIG_REF))
+        refs.push({ at: m.index, text: m[0], kind: 'fig', key: figLabel(m[1], m[2]) });
+      for (const m of line.matchAll(BLANK_REF))
+        refs.push({ at: m.index, text: m[0], kind: 'blank' });
+      refs.sort((a, b) => a.at - b.at);
+
       const p = el('p');
       let last = 0;
-      for (const m of line.matchAll(UNDERLINE_REF)) {
-        if (m.index > last) p.append(line.slice(last, m.index));
+      for (const r of refs) {
+        if (r.at < last) continue;                 // overlapping match
+        if (r.kind === 'blank') {
+          r.key = mapped ? labels[Math.min(seen, labels.length - 1)] : null;
+          seen += 1;
+        }
+        if (!r.key || !keys.has(r.key)) continue;
+        if (r.at > last) p.append(line.slice(last, r.at));
         p.append(el('button', {
           class: 'ulink',
-          onclick: () => { showCase = true; jumpTo = m[1]; draw(); },
-        }, m[0]));
-        last = m.index + m[0].length;
+          onclick: () => { showCase = true; jumpTo = r; draw(); },
+        }, r.text));
+        last = r.at + r.text.length;
       }
       p.append(line.slice(last));
       out.push(p);
@@ -267,7 +351,8 @@ export default async function renderQuizPm({ view, extra, go, ctx }) {
     body.append(el('div', { class: 'qtext' },
       el('span', { class: 'setsu', text: q.label }),
       q.lead ? el('p', { class: 'lead', text: q.lead }) : null,
-      ...questionText(q.text || '（設問文を取り出せませんでした。解答例と解説で学習してください）')));
+      ...questionText(q.text || '（設問文を取り出せませんでした。解答例と解説で学習してください）',
+                      q.parts, c)));
 
     // One box per 空欄, because that is how the answer sheet is laid out and
     // how a half-right answer earns its △.
@@ -308,18 +393,18 @@ export default async function renderQuizPm({ view, extra, go, ctx }) {
         run.index === run.items.length - 1 ? '結果を見る' : '次へ'));
 
     if (jumpTo) {
-      const mark = jumpTo;
+      const ref = jumpTo;
       jumpTo = null;
-      const target = body.querySelector(`.casebody [data-uline="${mark}"]`)
-        // The marker may sit inside a 表 that is shown as its crop; the picture
-        // carries the printed underline, so that is where to go.
-        || body.querySelector(`.casebody [data-ulines*="${mark}"]`);
+      const target = anchorOf(ref.kind, ref.key);
       if (target) {
         bringIntoView(target);
       } else {
-        // 24 of the 358 markers the 設問 refer to did not survive the scan.
-        // Saying so beats scrolling nowhere and looking broken.
-        toast(`下線${mark} は本文から読み取れていません`, 'err');
+        // Not everything survives the scan — 24 of the 358 下線, a couple of
+        // dozen 図表, and most 空欄 letters. Saying so beats scrolling nowhere
+        // and looking broken.
+        const what = ref.kind === 'fig' ? ref.key
+          : ref.kind === 'uline' ? `下線${ref.key}` : `空欄 ${ref.key}`;
+        toast(`${what} は本文から読み取れていません`, 'err');
       }
     }
   }

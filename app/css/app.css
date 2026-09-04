@@ -336,6 +336,14 @@ svg.chart .dot { fill: var(--accent); }
 }
 .casebody .figure { scroll-margin: 20vh; }
 
+/* A 空欄 in the 事例 is a target too, but it is not an underline: it is shown
+   as the box the booklet prints. */
+.casebody .uline.blank {
+  border-bottom: none;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-radius: 3px;
+}
+
 .casebody .uline.found {
   background: color-mix(in srgb, var(--accent) 28%, transparent);
   animation: uline-flash 1.8s ease-out;
