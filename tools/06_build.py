@@ -148,6 +148,10 @@ def build_pm(targets: list[str]) -> tuple[list, list, list]:
                     notes.append("事例本文が空")
                 if not ex.get("bySetsu"):
                     notes.append("解説なし")
+                # The same OCR tells 午前 flags on: full-width latin, half-width
+                # kana, ロ/口 and the rest. 午後 is 879 scanned pages of prose, so
+                # it needs the review list at least as much.
+                notes += [label for rx, label in SUSPECT if rx.search(prose)]
                 cases.append({
                     "id": case_id, "sessionId": sid, "section": "pm",
                     "paper": paper, "no": no, "title": title,
@@ -181,6 +185,8 @@ def build_pm(targets: list[str]) -> tuple[list, list, list]:
                     inotes = list(item.get("flags", []))
                     if not ask.get("text"):
                         inotes.append("設問文が問題冊子から取れていない")
+                    inotes += [label for rx, label in SUSPECT
+                               if rx.search(ask.get("text", ""))]
                     body_expl = ex.get("bySetsu", {}).get(str(setsu), {})
                     questions.append({
                         "id": qid, "sessionId": sid, "section": "pm",

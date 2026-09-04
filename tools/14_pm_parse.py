@@ -31,10 +31,16 @@ CORR = read_json(Path(__file__).resolve().parent / "corrections.json")
 FIXES = [(re.compile(r["pattern"], re.M), r["repl"]) for r in CORR["replacements"]]
 
 
+# The frame of a 空欄 is found from the gap around it, and a box whose letter
+# Vision also read shows up as a gap on both sides — two boxes where one was
+# printed. Nothing in these booklets sets two empty boxes side by side.
+DOUBLE_BOX = re.compile(r"(?:［\s*］\s*){2,}")
+
+
 def fix(s: str) -> str:
     for rx, repl in FIXES:
         s = rx.sub(repl, s)
-    return s
+    return DOUBLE_BOX.sub("［　］", s)
 
 # Every booklet opens a 大問 the same way; only the tail varies — "設問に答えよ"
 # in the merged 午後, "設問1～4に答えよ" in the older 午後I / 午後II, and sometimes
@@ -53,6 +59,21 @@ SUB = re.compile(r"^[（(]\s*([0-9０-９]{1,2})\s*[）)]\s*")
 SECTION = re.compile(r"^[〔［\[【]")
 CAPTION = re.compile(r"^([図表])\s*([0-9０-９]{1,2})\s*[^0-9０-９]")
 BLANK_CHAR = re.compile(r"^[a-zA-Zあ-んア-ンα-ωΑ-Ω①-⑳]$")
+# Vision reads the 空欄 frame itself as a filled square often enough to matter
+# (98 times in this corpus). It is a box, so it is shown as one.
+BOX_GLYPH = re.compile(r"[■□▪▫◼◻▢▣◾◽]+")
+
+# The booklet is printed to be read from both ends: 注意事項 on the front cover
+# *and* on the back. The back one falls after the last 設問, so without this the
+# whole of "答案用紙は、いかなる場合でも提出してください" ends up appended to the
+# last 設問文.
+#
+# The markers are only ones that belong to running the exam. "答案用紙" is
+# deliberately not among them: 設問 say things like "答案用紙の大・中・小のいずれ
+# かの文字を○で囲んで示せ", and keying on it threw away a whole page of R05秋 問4.
+# A page carrying a 設問 is never dropped, whatever else is on it.
+NOTICE = re.compile(r"監督員|退室可能時間|問題冊子|試験開始の合図"
+                    r"|試験問題に記載されている会社名|受験番号欄")
 
 # Furniture: running heads, page numbers, and the sheets between 大問.
 FURNITURE = [
@@ -106,7 +127,7 @@ def rows_of(page: dict, page_no: int) -> list[dict]:
                         parts.append("［　］")
             just_boxed = False
             parts.append(body)
-        text = fix(clean("".join(parts)))
+        text = BOX_GLYPH.sub("［　］", fix(clean("".join(parts))))
         if text:
             # The row's own frame is kept: stage 15 crops 図表 by the box the
             # lines around a caption occupy, and nothing else knows where the
@@ -135,7 +156,11 @@ def load_rows(sid: str, paper: str) -> list[dict]:
     pages = json.loads(path.read_text(encoding="utf-8"))
     rows: list[dict] = []
     for n, page in enumerate(pages, 1):
-        for r in rows_of(page, n):
+        got = rows_of(page, n)
+        if (sum(1 for r in got if NOTICE.search(r["text"])) >= 2
+                and not any(is_setsu_head(r) for r in got)):
+            continue                       # 注意事項のページ（表紙・裏表紙）
+        for r in got:
             # The page number sits in the bottom margin on every sheet.
             if r["y"] > 0.92 and any(p.match(r["text"]) for p in FURNITURE):
                 continue
@@ -272,7 +297,10 @@ def build_body(rows: list[dict]) -> list[dict]:
         out.append({"kind": kind, "text": text, "page": r["page"], "lines": 1,
                     "x": round(x, 3), "y": round(r["y"], 4),
                     "w": round(r.get("w", 0), 4), "h": round(r.get("h", 0), 4)})
-    return [dict(b, text=clean(b["text"])) for b in out if clean(b["text"])]
+    # Corrections are applied per row as it is read, but a pattern that straddles
+    # a line break ("施" ending one line, "弱" opening the next) only becomes
+    # visible once the paragraph is joined.
+    return [dict(b, text=fix(clean(b["text"]))) for b in out if clean(b["text"])]
 
 
 def build_items(rows: list[dict]) -> list[dict]:
@@ -308,8 +336,8 @@ def build_items(rows: list[dict]) -> list[dict]:
         if items:
             items[-1]["text"] += text
     for it in items:
-        it["text"] = clean(it["text"])
-        it["lead"] = clean(it.get("lead") or "")
+        it["text"] = fix(clean(it["text"]))
+        it["lead"] = fix(clean(it.get("lead") or ""))
     return [i for i in items if i["text"]]
 
 
@@ -354,7 +382,9 @@ def main() -> None:
                 if key:
                     want_ids = {(i["setsu"], i["sub"]) for i in key["items"]}
                     got_ids = {(i["setsu"], i["sub"]) for i in c["items"]}
-                    missing = sorted(want_ids - got_ids)
+                    # sub is None for a 設問 with no 小問; sort on that too.
+                    missing = sorted(want_ids - got_ids,
+                                     key=lambda x: (x[0], x[1] or 0))
                     if missing:
                         note.append(f"{sid}/{paper} 問{no}: 設問文が取れない "
                                     + " ".join(f"設問{a}({b})" if b else f"設問{a}"

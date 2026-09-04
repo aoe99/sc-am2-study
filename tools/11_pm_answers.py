@@ -46,12 +46,17 @@ NOISE = [
 SETSU = re.compile(r"^設問\s*([0-9０-９]{1,2})\s*")
 SUB = re.compile(r"^[(（]\s*([0-9０-９]{1,2})\s*[)）]\s*")
 BULLET = re.compile(r"^[・･]\s*")
-# 空欄 labels: latin a..z, hiragana あ..ん, katakana ア..ン, circled ①..⑳.
-LABEL = re.compile(r"^([a-zA-Zａ-ｚＡ-Ｚあ-んア-ン][)）]?|[①-⑳])\s+(?=\S)")
-LABEL_ALONE = re.compile(r"^([a-zA-Zａ-ｚＡ-Ｚあ-んア-ン]|[①-⑳])\s*$")
+# 空欄 labels: latin a..z, katakana ア..ン, circled ①..⑳, and hiragana — but only
+# あ〜こ. IPA enumerates blanks あ, い, う…, never に or っ; allowing every kana
+# turned a continuation line opening with a particle ("に入れる…") into a blank
+# of its own and put an input box labelled "に" on the answer form.
+# Spelled out rather than a range: [あ-こ] would also take が and ぐ.
+KANA_LABEL = "あいうえおかきくけこ"
+LABEL = re.compile(rf"^([a-zA-Zａ-ｚＡ-Ｚ{KANA_LABEL}ア-ン][)）]?|[①-⑳])\s+(?=\S)")
+LABEL_ALONE = re.compile(rf"^([a-zA-Zａ-ｚＡ-Ｚ{KANA_LABEL}ア-ン]|[①-⑳])\s*$")
 # A second 空欄 opening midway through a line: "d イ e カ".  Only latin and
 # hiragana are split on — katakana in that position is usually the answer.
-INLINE_LABEL = re.compile(r"\s+([a-zａ-ｚあ-ん])\s+(?=\S)")
+INLINE_LABEL = re.compile(rf"\s+([a-zａ-ｚ{KANA_LABEL}])\s+(?=\S)")
 # The 備考 column carries these; PDFKit flattens them onto a line of their own.
 REMARK = re.compile(r"^(順不同|全て順不同|各順不同|別解|.{0,12}も可|.{0,20}でも可)\s*$")
 
