@@ -46,6 +46,12 @@ function open() {
       if (!db.objectStoreNames.contains(STORES.states))
         db.createObjectStore(STORES.states, { keyPath: 'questionId' });
     };
+    // A tab still holding the previous version blocks the upgrade, and the
+    // request then neither succeeds nor fails — the app would sit on a blank
+    // screen with nothing to go on. Say what happened instead.
+    req.onblocked = () => reject(new Error(
+      'このアプリを開いている別のタブがあるため、データを更新できません。'
+      + '他のタブを閉じてから読み込み直してください。'));
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
