@@ -111,14 +111,22 @@ export default async function renderQuizPm({ view, extra, go, ctx }) {
     // 表 captions print above their table and 図 captions below their figure,
     // so the fragments a crop replaces can lie on either side of it.
     const hidden = new Set();
+    // 下線① is often inside a 表, and that table is shown as its crop rather
+    // than as its cell fragments. The marker then has nowhere to scroll to even
+    // though the printed underline is right there in the picture — so the crop
+    // inherits the markers of the rows it replaced.
+    const figMarks = new Map();
     body.forEach((b, i) => {
       if (b.kind !== 'caption' || !byCaption.has(b.text)) return;
+      const marks = new Set();
       for (const step of [1, -1]) {
         for (let j = i + step; j >= 0 && j < body.length; j += step) {
           if (body[j].kind !== 'figure') break;
           hidden.add(j);
+          for (const m of body[j].text.matchAll(CIRCLED)) marks.add(m[0]);
         }
       }
+      figMarks.set(i, marks);
     });
     for (let i = 0; i < body.length; i++) {
       const b = body[i];
@@ -126,8 +134,13 @@ export default async function renderQuizPm({ view, extra, go, ctx }) {
         box.append(el('h3', { text: b.text }));
       } else if (b.kind === 'caption') {
         const fig = byCaption.get(b.text);
-        if (fig) box.append(await figure(fig.file));
-        box.append(el('p', { class: 'cap', text: b.text }));
+        if (fig) {
+          const node = await figure(fig.file);
+          const marks = [...(figMarks.get(i) || [])].join('');
+          if (marks) node.dataset.ulines = marks;
+          box.append(node);
+        }
+        box.append(marked(b.text, el('p', { class: 'cap' })));
       } else if (b.kind === 'figure') {
         if (!hidden.has(i)) box.append(marked(b.text, el('pre', { class: 'figtext' })));
       } else {
@@ -297,19 +310,42 @@ export default async function renderQuizPm({ view, extra, go, ctx }) {
     if (jumpTo) {
       const mark = jumpTo;
       jumpTo = null;
-      const target = body.querySelector(`.casebody [data-uline="${mark}"]`);
+      const target = body.querySelector(`.casebody [data-uline="${mark}"]`)
+        // The marker may sit inside a 表 that is shown as its crop; the picture
+        // carries the printed underline, so that is where to go.
+        || body.querySelector(`.casebody [data-ulines*="${mark}"]`);
       if (target) {
-        target.scrollIntoView({ block: 'center' });
-        // A flash, because a bold ① in eight pages of prose is still easy to
-        // walk past once the scroll has stopped.
-        target.classList.add('found');
-        setTimeout(() => target.classList.remove('found'), 1800);
+        bringIntoView(target);
       } else {
         // 24 of the 358 markers the 設問 refer to did not survive the scan.
         // Saying so beats scrolling nowhere and looking broken.
         toast(`下線${mark} は本文から読み取れていません`, 'err');
       }
     }
+  }
+
+  /** Scroll a 下線 into view and flash it.
+   *
+   *  Not once: the 事例's figures decode after the first layout and each one
+   *  that lands pushes what is below it down, so a position taken before they
+   *  arrive leaves the target far off screen. Waiting on their load events
+   *  races — an image can finish between the check and the listener — so the
+   *  height is watched instead, and the position re-taken whenever it moves,
+   *  until it holds still.
+   */
+  function bringIntoView(target) {
+    const settle = () => target.scrollIntoView({ block: 'center' });
+    target.classList.add('found');
+    setTimeout(() => target.classList.remove('found'), 1800);
+    const box = body.querySelector('.casebody');
+    let last = -1, still = 0, frames = 0;
+    const tick = () => {
+      const h = box ? box.scrollHeight : 0;
+      if (h !== last) { last = h; still = 0; settle(); } else still += 1;
+      // ~20 frames of no movement, and never more than a couple of seconds.
+      if (still < 20 && ++frames < 150) requestAnimationFrame(tick);
+    };
+    tick();
   }
 
   async function verdictNode(q, item) {
