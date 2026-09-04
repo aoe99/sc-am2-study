@@ -317,6 +317,33 @@ svg.chart .dot { fill: var(--accent); }
 .casebody .intent { margin: 0 0 10px; }
 .casebody summary { cursor: pointer; color: var(--fg-dim); font-size: .86rem; }
 
+/* 下線① and its kin. The line under the phrase is a drawing and never survives
+   the scan, so the marker that opens it carries the emphasis instead. */
+.casebody .uline {
+  font-weight: 700;
+  color: var(--accent);
+  border-bottom: 2px solid var(--accent);
+  padding: 0 1px;
+  scroll-margin: 30vh;
+  border-radius: 2px;
+}
+.casebody .uline.found {
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+  animation: uline-flash 1.8s ease-out;
+}
+@keyframes uline-flash {
+  0%, 40% { background: color-mix(in srgb, var(--accent) 45%, transparent); }
+  100% { background: transparent; }
+}
+
+/* "下線①" inside a 設問: press it to go and look at the phrase. */
+button.ulink {
+  font: inherit; color: var(--accent); background: none;
+  border: none; border-bottom: 1px dashed currentColor;
+  padding: 0 1px; min-height: 0; cursor: pointer;
+}
+button.ulink:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+
 .qtext .setsu {
   display: inline-block; font-weight: 700; margin-bottom: 6px;
   color: var(--accent);

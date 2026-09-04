@@ -9,8 +9,15 @@
 
 import * as data from '../data.js';
 import * as engine from '../engine.js';
-import { el, add, clear, fmtClock, paras } from '../ui.js';
+import { el, add, clear, fmtClock, paras, toast } from '../ui.js';
 import { figure } from '../figures.js';
+
+// 下線① in a 設問 points at a phrase the booklet underlines, and the line itself
+// is a drawing — OCR only ever returns the ① that opens it. So the marker is
+// what gets shown: called out where it sits in the 事例, and made a way to jump
+// there from the 設問 that asks about it.
+const CIRCLED = /[①-⑳]/g;
+const UNDERLINE_REF = /下線\s*([①-⑳])/g;
 
 const MARKS = [
   { value: true, label: '○ 正解', cls: 'ok' },
@@ -33,6 +40,7 @@ export default async function renderQuizPm({ view, extra, go, ctx }) {
   let showCase = true;
   let seenCase = null;
   let viewing = -1;
+  let jumpTo = null;      // 丸数字 to bring into view once the case is drawn
 
   if (run.deadline) {
     const clock = el('span', { class: 'timer' });
@@ -121,12 +129,44 @@ export default async function renderQuizPm({ view, extra, go, ctx }) {
         if (fig) box.append(await figure(fig.file));
         box.append(el('p', { class: 'cap', text: b.text }));
       } else if (b.kind === 'figure') {
-        if (!hidden.has(i)) box.append(el('pre', { class: 'figtext', text: b.text }));
+        if (!hidden.has(i)) box.append(marked(b.text, el('pre', { class: 'figtext' })));
       } else {
-        box.append(el('p', { text: b.text }));
+        box.append(marked(b.text, el('p', {})));
       }
     }
     return box;
+  }
+
+  /** Fill a node with text, setting every 下線 marker apart and anchoring it. */
+  function marked(text, node) {
+    let last = 0;
+    for (const m of String(text).matchAll(CIRCLED)) {
+      if (m.index > last) node.append(text.slice(last, m.index));
+      node.append(el('span', { class: 'uline', dataset: { uline: m[0] } }, m[0]));
+      last = m.index + m[0].length;
+    }
+    node.append(text.slice(last));
+    return node;
+  }
+
+  /** 設問文 with each "下線①" turned into a way to go and look at it. */
+  function questionText(text) {
+    const out = [];
+    for (const line of String(text).split('\n')) {
+      const p = el('p');
+      let last = 0;
+      for (const m of line.matchAll(UNDERLINE_REF)) {
+        if (m.index > last) p.append(line.slice(last, m.index));
+        p.append(el('button', {
+          class: 'ulink',
+          onclick: () => { showCase = true; jumpTo = m[1]; draw(); },
+        }, m[0]));
+        last = m.index + m[0].length;
+      }
+      p.append(line.slice(last));
+      out.push(p);
+    }
+    return out;
   }
 
   function navPanel() {
@@ -214,7 +254,7 @@ export default async function renderQuizPm({ view, extra, go, ctx }) {
     body.append(el('div', { class: 'qtext' },
       el('span', { class: 'setsu', text: q.label }),
       q.lead ? el('p', { class: 'lead', text: q.lead }) : null,
-      ...paras(q.text || '（設問文を取り出せませんでした。解答例と解説で学習してください）')));
+      ...questionText(q.text || '（設問文を取り出せませんでした。解答例と解説で学習してください）')));
 
     // One box per 空欄, because that is how the answer sheet is laid out and
     // how a half-right answer earns its △.
@@ -253,6 +293,23 @@ export default async function renderQuizPm({ view, extra, go, ctx }) {
       }, left ? `未採点 ${left}` : '一覧'),
       el('button', { class: 'primary', onclick: next },
         run.index === run.items.length - 1 ? '結果を見る' : '次へ'));
+
+    if (jumpTo) {
+      const mark = jumpTo;
+      jumpTo = null;
+      const target = body.querySelector(`.casebody [data-uline="${mark}"]`);
+      if (target) {
+        target.scrollIntoView({ block: 'center' });
+        // A flash, because a bold ① in eight pages of prose is still easy to
+        // walk past once the scroll has stopped.
+        target.classList.add('found');
+        setTimeout(() => target.classList.remove('found'), 1800);
+      } else {
+        // 24 of the 358 markers the 設問 refer to did not survive the scan.
+        // Saying so beats scrolling nowhere and looking broken.
+        toast(`下線${mark} は本文から読み取れていません`, 'err');
+      }
+    }
   }
 
   async function verdictNode(q, item) {
