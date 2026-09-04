@@ -13,7 +13,7 @@ import difflib, hashlib, re, sys, unicodedata
 from collections import defaultdict
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from sclib import DATA, BUILD, read_json, write_json
+from sclib import DATA, BUILD, SECTIONS, read_json, write_json
 
 NEAR = 0.82          # report as a near-duplicate at or above this ratio
 PREFILTER = 0.55     # cheap 3-gram gate before the expensive comparison
@@ -57,7 +57,11 @@ def choice_sim(qa: dict, qb: dict) -> float:
 
 def main() -> None:
     doc = read_json(DATA / "questions.json")
-    qs = doc["questions"]
+    # 午後 is out of scope: IPA writes a fresh case study every sitting, and a
+    # 設問 like "本文中の下線①について答えよ" is worded almost identically across
+    # ten years without being the same question at all.
+    qs = [q for q in doc["questions"]
+          if SECTIONS.get(q.get("section", "am2"), {}).get("style") == "choice"]
     order = {s["id"]: n for n, s in enumerate(doc["sessions"])}
     byid = {q["id"]: q for q in qs}
 

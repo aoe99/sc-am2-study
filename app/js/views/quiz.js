@@ -4,13 +4,22 @@ import * as data from '../data.js';
 import * as engine from '../engine.js';
 import * as settings from '../settings.js';
 import { el, add, clear, shuffled, fmtClock, paras } from '../ui.js';
+import renderQuizPm from './quizPm.js';
+import { figure, figureImg } from '../figures.js';
 
 const KEYS = ['ア', 'イ', 'ウ', 'エ'];
 const HOTKEYS = { '1': 0, '2': 1, '3': 2, '4': 3, a: 0, b: 1, c: 2, d: 3 };
 
-export default async function renderQuiz({ view, extra, go, ctx }) {
+export default async function renderQuiz(props) {
+  const run = props.ctx.run;
+  if (!run) { props.go('home'); return; }
+  // 午後 is written, not chosen from four; it has its own screen.
+  if (run.written) return renderQuizPm(props);
+  return renderQuizAm(props);
+}
+
+async function renderQuizAm({ view, extra, go, ctx }) {
   const run = ctx.run;
-  if (!run) { go('home'); return; }
 
   const states = new Map(((await data.allStates()) || []).map(s => [s.questionId, s]));
   const body = el('div');
@@ -292,31 +301,12 @@ export default async function renderQuiz({ view, extra, go, ctx }) {
   };
 }
 
+export { figure, figureImg };
+
 export function explanation(q) {
   return el('div', { class: 'explain' },
     ...paras(q.explanation),
     el('div', { class: 'src', text: '出典: ' + (q.explanationSource || '教科書解説') }));
-}
-
-export async function figure(path) {
-  const wrap = el('div', { class: 'figure' });
-  wrap.append(await figureImg(path));
-  return wrap;
-}
-
-export async function figureImg(path) {
-  const url = await data.figureUrl(path);
-  if (!url) return el('p', { class: 'muted', text: '（図表を読み込めませんでした）' });
-  return el('img', {
-    src: url, alt: '図表',
-    onclick: () => lightbox(url),
-  });
-}
-
-function lightbox(url) {
-  const box = el('div', { class: 'lightbox', onclick: () => box.remove() },
-    el('img', { src: url, alt: '図表（拡大）' }));
-  document.body.append(box);
 }
 
 function hash(s) {

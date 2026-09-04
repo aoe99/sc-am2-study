@@ -3,11 +3,19 @@
 import * as data from '../data.js';
 import * as engine from '../engine.js';
 import { el, pct, fmtClock, paras } from '../ui.js';
-import { explanation, figure, figureImg } from './quiz.js';
+import { explanation } from './quiz.js';
+import { figure, figureImg } from '../figures.js';
+import renderResultPm from './resultPm.js';
 
-export default async function renderResult({ view, extra, go, ctx }) {
+export default async function renderResult(props) {
+  const run = props.ctx.lastResult;
+  if (!run) { props.go('home'); return; }
+  if (run.written) return renderResultPm(props);
+  return renderResultAm(props);
+}
+
+async function renderResultAm({ view, extra, go, ctx }) {
   const run = ctx.lastResult;
-  if (!run) { go('home'); return; }
 
   // In 「まとめて採点」 the answers were held back; settle them all now.
   if (run.grading === 'end' && !run.settled) {

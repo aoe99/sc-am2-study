@@ -1,13 +1,14 @@
 #!/bin/bash
 # 全ステージを順に実行する。
-#   ./tools/run_all.sh                    # 午前I・午前II の全19回
+#   ./tools/run_all.sh                    # 午前I・午前II・午後 の全19回
 #   ./tools/run_all.sh --section am1      # 午前Iだけ
-#   ./tools/run_all.sh R07aki             # 両区分の R07aki だけ
+#   ./tools/run_all.sh --section pm       # 午後だけ
+#   ./tools/run_all.sh R07aki             # 全区分の R07aki だけ
 #   ./tools/run_all.sh --section am2 R07aki
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-SECTIONS=(am1 am2)
+SECTIONS=(am1 am2 pm)
 ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -23,14 +24,24 @@ if [ ! -x bin/pdfkit-tool ] || [ tools/swift/pdfkit-tool.swift -nt bin/pdfkit-to
     -framework PDFKit -framework Vision -framework AppKit
 fi
 
+# 午前は 01〜05、午後は 11〜15。OCR(03) だけは共通。
 for sec in "${SECTIONS[@]}"; do
-  for stage in 01_answers 02_explanations 03_ocr 04_parse 05_figures; do
+  if [ "$sec" = pm ]; then
+    STAGES=(11_pm_answers 12_pm_commentary 13_pm_explanations 03_ocr 14_pm_parse 15_pm_figures)
+  else
+    STAGES=(01_answers 02_explanations 03_ocr 04_parse 05_figures)
+  fi
+  for stage in "${STAGES[@]}"; do
     echo; echo "== [$sec] $stage =="
-    if [ "$stage" = 03_ocr ]; then
-      python3 "tools/$stage.py" --section "$sec" --tesseract ${ARGS[@]+"${ARGS[@]}"}
-    else
-      python3 "tools/$stage.py" --section "$sec" ${ARGS[@]+"${ARGS[@]}"}
-    fi
+    case "$stage" in
+      03_ocr)
+        python3 "tools/$stage.py" --section "$sec" --tesseract ${ARGS[@]+"${ARGS[@]}"} ;;
+      1[1-5]_pm_*)
+        # 午後のステージは区分がひとつしかないので --section を取らない。
+        python3 "tools/$stage.py" ${ARGS[@]+"${ARGS[@]}"} ;;
+      *)
+        python3 "tools/$stage.py" --section "$sec" ${ARGS[@]+"${ARGS[@]}"} ;;
+    esac
   done
 done
 
@@ -45,4 +56,4 @@ if [ ${#ARGS[@]} -eq 0 ]; then
 fi
 
 echo; echo "== 08_validate =="; python3 tools/08_validate.py || true
-echo; echo "完了: data/questions.json / data/sc-data.json / data/build/review.md"
+echo; echo "完了: data/questions.json / data/sc-data-am.json / data/sc-data-pm.json / data/build/review.md"

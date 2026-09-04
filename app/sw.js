@@ -1,15 +1,15 @@
 // Offline shell only. The question data lives in IndexedDB and is never
 // cached here — it is copyrighted and must not leave the device.
 
-const VERSION = 'sc-am2-v13';
+const VERSION = 'sc-am2-v14';
 const SHELL = [
   './', './index.html', './manifest.webmanifest',
   './css/app.css',
   './js/main.js', './js/db.js', './js/data.js', './js/settings.js',
-  './js/ui.js', './js/engine.js', './js/leitner.js',
+  './js/ui.js', './js/engine.js', './js/leitner.js', './js/figures.js',
   './js/views/home.js', './js/views/setup.js', './js/views/quiz.js',
-  './js/views/result.js', './js/views/stats.js', './js/views/settings.js',
-  './js/views/import.js',
+  './js/views/quizPm.js', './js/views/result.js', './js/views/resultPm.js',
+  './js/views/stats.js', './js/views/settings.js', './js/views/import.js',
   './icons/icon-180.png', './icons/icon-192.png', './icons/icon-512.png',
   './icons/icon-512-maskable.png',
 ];

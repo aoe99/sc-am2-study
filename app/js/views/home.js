@@ -7,11 +7,12 @@ import { el, pct, fmtDate } from '../ui.js';
 
 const DAY = 86400000;
 
-export default async function renderHome({ view, extra, go }) {
+export default async function renderHome({ view, extra, go, ctx }) {
   const secs = data.sections();
   let section = settings.get('section');
   if (!secs.some(s => s.id === section)) section = settings.set('section', secs[0].id);
   const info = data.sectionInfo(section);
+  const written = data.isWritten(section);
   const qs = data.inSection(section);
   // Everything on this screen sits under the 午前Ⅰ/午前Ⅱ switch, so the record
   // has to be narrowed to the paper being shown — otherwise the counts read as
@@ -50,10 +51,35 @@ export default async function renderHome({ view, extra, go }) {
     view.append(row);
   }
 
+  // A 午後 sitting is 150 minutes; it will be interrupted. The run is written
+  // back as it is answered, so the way back into it belongs here.
+  const saved = ctx ? await data.loadRun() : null;
+  if (saved && !saved.finished && saved.items && saved.items.length) {
+    const done = saved.items.filter(i =>
+      i.result !== null || (i.typed || []).some(t => t && t.trim())).length;
+    const secInfo = data.sectionInfo(saved.section);
+    view.append(el('div', { class: 'card resume' },
+      el('h2', { text: '中断した学習があります' }),
+      el('p', { class: 'muted' },
+        `${secInfo ? secInfo.label : ''}${saved.sessionLabel ? ' ' + saved.sessionLabel : ''}`
+        + `  ${done} / ${saved.items.length}問  `
+        + `（${fmtDate(saved.savedAt || saved.startedAt)}）`),
+      saved.deadline && saved.deadline < Date.now()
+        ? el('p', { class: 'muted', text: '制限時間は過ぎています。再開すると結果画面に進みます。' }) : null,
+      el('div', { class: 'row' },
+        el('button', { class: 'primary', onclick: () => {
+          if (saved.section) settings.set('section', saved.section);
+          ctx.run = saved;
+          go('quiz');
+        } }, '再開する'),
+        el('button', { onclick: async () => { await data.clearRun(); go('home'); } },
+          '破棄する'))));
+  }
+
   view.append(
     el('div', { class: 'card' },
       el('div', { class: 'grid two' },
-        stat(qs.length, '問題数'),
+        stat(qs.length, written ? '設問数' : '問題数'),
         stat(attempted.length, '着手'),
         stat(pct(totalCorrect, totalAttempts) + '%', '全体正解率'),
         stat(due, '今日の復習')),
@@ -66,14 +92,16 @@ export default async function renderHome({ view, extra, go }) {
     el('div', { class: 'card' },
       el('h2', { text: 'モードを選ぶ' }),
       el('div', { class: 'grid two' },
-        el('button', { class: 'primary', onclick: () => go('setup/practice') }, '練習'),
+        el('button', { class: 'primary', onclick: () => go('setup/practice') },
+          written ? '練習（設問ごと）' : '練習'),
         el('button', { onclick: () => go('setup/exam') },
-          `本番 ${info.count}問${info.minutes}分`),
+          written ? `本番 ${examSpan(info)}` : `本番 ${info.count}問${info.minutes}分`),
         el('button', {
           onclick: () => go('setup/review'),
           disabled: due === 0,
         }, due ? `復習 ${due}問` : '復習（なし）'),
-        el('button', { onclick: () => go('setup/session') }, '年度別'))),
+        el('button', { onclick: () => go(written ? 'setup/case' : 'setup/session') },
+          written ? `事例別 ${data.casesIn(section).length}事例` : '年度別'))),
 
     el('div', { class: 'card' },
       el('h2', { text: '直近7日' }),
@@ -86,11 +114,17 @@ export default async function renderHome({ view, extra, go }) {
 
   // The build stamp of the loaded pack. Keeping it in sight is what tells a
   // stale import apart from a bug in the extraction.
-  const meta = data.meta();
+  const meta = data.metaFor(section);
   if (meta && meta.generatedAt) {
     view.append(el('p', { class: 'muted', style: 'text-align:center;font-size:.76rem' },
       `問題データ ${String(meta.generatedAt).replace('T', ' ').slice(0, 16)}`));
   }
+}
+
+/** 午後 ran as two papers until 令和5年度秋期; the switch shows both spans. */
+function examSpan(info) {
+  const mins = [...new Set((info.papers || []).map(p => p.minutes))].sort((a, b) => a - b);
+  return mins.length ? mins.join('/') + '分' : `${info.minutes}分`;
 }
 
 const stat = (value, label) =>

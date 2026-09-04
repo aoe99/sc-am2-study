@@ -1,15 +1,22 @@
 #!/usr/bin/env python3
 """Stage 6 — merge every stage into data/questions.json and the review report.
 
-    python3 tools/06_build.py [--section am1|am2] [session ...]
+    python3 tools/06_build.py [--section am1|am2|pm] [session ...]
                                        # 省略時は生成済みの区分をすべて統合
+
+午前 is one record per question.  午後 is two: a `case` holding the 事例本文 and
+its 図表, and one `question` per 設問 pointing at it.  Keeping the questions flat
+is what lets the Leitner boxes, the study record and the stats stay exactly as
+they are — a 設問 is the thing you answer and the thing you come back to, not the
+ten pages of scenario above it.
 """
 from __future__ import annotations
 import datetime as dt, json, re, sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from sclib import (SESSIONS, SESSION_IDS, SECTIONS, CHOICE_KEYS, ROOT, DATA,
-                   BUILD, build_dir, exam_name, pdf_path, read_json, write_json)
+from sclib import (SESSIONS, SESSION_IDS, SECTIONS, CHOICE_KEYS, PM_PAPERS, ROOT,
+                   DATA, BUILD, build_dir, exam_name, pdf_path, pm_papers_of,
+                   read_json, write_json)
 
 SCHEMA_VERSION = 1
 TAGS = read_json(Path(__file__).resolve().parent / "tags.json")
@@ -96,11 +103,122 @@ def available_sections() -> list[str]:
     return [sec for sec in SECTIONS if (build_dir(sec) / "parsed.json").exists()]
 
 
+# --- 午後 ---------------------------------------------------------------
+
+def pm_commentary(comm: dict, setsu: int, sub) -> tuple[str, str | None]:
+    """IPA's remarks on this 設問, falling back to the whole 設問's paragraph.
+
+    The 採点講評 sometimes addresses 設問3(1) and sometimes 設問3 as a whole, so a
+    小問 reads the more specific one where it exists.
+    """
+    by = comm.get("bySetsu", {}) if comm else {}
+    hit = by.get(f"{setsu}({sub})") if sub else None
+    hit = hit or by.get(str(setsu))
+    return ((hit or {}).get("text", ""), (hit or {}).get("rate"))
+
+
+def build_pm(targets: list[str]) -> tuple[list, list, list]:
+    root = build_dir("pm")
+    answers = read_json(root / "answers.json")
+    parsed = read_json(root / "parsed.json")
+    expl = read_json(root / "explanations.json")
+    comm = read_json(root / "commentary.json")
+    figs = read_json(root / "figures.json") if (root / "figures.json").exists() else {}
+
+    cases, questions, review = [], [], []
+    for sid in targets:
+        if sid not in parsed:
+            continue
+        for paper in pm_papers_of(sid):
+            for no_s, body in sorted(parsed[sid].get(paper, {}).items(),
+                                     key=lambda kv: int(kv[0])):
+                no = int(no_s)
+                key = answers.get(sid, {}).get(paper, {}).get(no_s, {})
+                ex = expl.get(sid, {}).get(paper, {}).get(no_s, {})
+                cm = comm.get(sid, {}).get(paper, {}).get(no_s, {})
+                fg = figs.get(sid, {}).get(paper, {}).get(no_s, {})
+                case_id = f"{sid}-{paper}-{no}"
+                prose = "\n".join(b["text"] for b in body["body"]
+                                   if b["kind"] in ("para", "heading"))
+                # 翔泳社 is the only one of the four PDFs that names the 事例;
+                # IPA's own heading is just 問N + the topic in passing.
+                title = ex.get("title") or body.get("title") or f"問{no}"
+                notes = []
+                if not body["body"]:
+                    notes.append("事例本文が空")
+                if not ex.get("bySetsu"):
+                    notes.append("解説なし")
+                cases.append({
+                    "id": case_id, "sessionId": sid, "section": "pm",
+                    "paper": paper, "no": no, "title": title,
+                    "intent": key.get("intent", ""),
+                    "overview": cm.get("overall", ""),
+                    "overviewRate": cm.get("overallRate"),
+                    "body": [{"kind": b["kind"], "text": b["text"], "page": b["page"]}
+                             for b in body["body"]],
+                    "figures": fg.get("figures", []),
+                    "pages": body.get("pages", []),
+                    "tags": tags_for(prose[:6000]),
+                    "explanationSource": "情報処理教科書 安全確保支援士 読者特典",
+                    "needsReview": bool(notes),
+                    "source": {
+                        "questionPdf": f"{sid}/{pdf_path(sid, '1問題', 'pm', paper).name}",
+                        "pages": body.get("pages", []),
+                    },
+                })
+                if notes:
+                    review.append((case_id, notes, None))
+
+                # The booklet supplies the wording, the 解答例 supplies the
+                # answer; an item exists when the 解答例 has one, because that is
+                # the authoritative list of what was actually asked.
+                texts = {(i["setsu"], i["sub"]): i for i in body["items"]}
+                for n, item in enumerate(key.get("items", []), 1):
+                    setsu, sub = item["setsu"], item["sub"]
+                    ask = texts.get((setsu, sub), {})
+                    qid = f"{case_id}-{setsu}" + (f"-{sub}" if sub else "")
+                    text, rate = pm_commentary(cm, setsu, sub)
+                    inotes = list(item.get("flags", []))
+                    if not ask.get("text"):
+                        inotes.append("設問文が問題冊子から取れていない")
+                    body_expl = ex.get("bySetsu", {}).get(str(setsu), {})
+                    questions.append({
+                        "id": qid, "sessionId": sid, "section": "pm",
+                        "caseId": case_id,
+                        "no": no * 100 + n,
+                        "setsu": setsu, "sub": sub, "label": item["label"],
+                        "text": ask.get("text", ""),
+                        "lead": ask.get("lead", ""),
+                        "answerKind": item["kind"],
+                        "parts": item["parts"],
+                        "remarks": item.get("remarks", []),
+                        "explanation": body_expl.get("explanation", ""),
+                        "explanationSource": "情報処理教科書 安全確保支援士 読者特典",
+                        "commentary": text,
+                        "commentaryRate": rate,
+                        "tags": tags_for(" ".join(
+                            [ask.get("text", ""), body_expl.get("explanation", "")])),
+                        "duplicateGroupId": None,
+                        "needsReview": bool(inotes),
+                        "source": {"page": ask.get("page"), "caseId": case_id},
+                    })
+                    if inotes:
+                        review.append((qid, inotes, None))
+    return cases, questions, review
+
+
 def build(targets: list[str], sections: list[str]) -> tuple:
     meta = {s[0]: s for s in SESSIONS}
-    questions, review = [], []
+    questions, cases, review = [], [], []
+
+    if "pm" in sections:
+        cases, pm_questions, pm_review = build_pm(targets)
+        questions += pm_questions
+        review += pm_review
 
     for sec in sections:
+        if SECTIONS[sec]["style"] != "choice":
+            continue
         root = build_dir(sec)
         answers = read_json(root / "answers.json")
         expl = read_json(root / "explanations.json")
@@ -160,6 +278,7 @@ def build(targets: list[str], sections: list[str]) -> tuple:
 
     order = {s: n for n, s in enumerate(SESSION_IDS)}
     used = sorted({q["sessionId"] for q in questions}, key=lambda s: order[s])
+    cases.sort(key=lambda c: (order[c["sessionId"]], c["paper"], c["no"]))
     sessions = [{"id": s, "label": meta[s][1], "year": meta[s][2],
                  "term": meta[s][3], "examName": exam_name(s)} for s in used]
     questions.sort(key=lambda q: (order[q["sessionId"]], q["section"], q["no"]))
@@ -169,16 +288,31 @@ def build(targets: list[str], sections: list[str]) -> tuple:
             "schemaVersion": SCHEMA_VERSION,
             "sessionCount": len(sessions),
             "questionCount": len(questions),
-            "sections": [{"id": sec, "label": SECTIONS[sec]["label"],
-                          "count": SECTIONS[sec]["count"],
-                          "minutes": SECTIONS[sec]["minutes"],
-                          "questionCount": sum(1 for q in questions if q["section"] == sec)}
-                         for sec in sections],
+            "caseCount": len(cases),
+            "sections": [section_meta(sec, questions, cases) for sec in sections],
         },
         "sessions": sessions,
+        "cases": cases,
         "questions": questions,
     }
     return doc, review
+
+
+def section_meta(sec: str, questions: list, cases: list) -> dict:
+    info = SECTIONS[sec]
+    out = {"id": sec, "label": info["label"], "count": info["count"],
+           "minutes": info["minutes"], "style": info["style"],
+           "questionCount": sum(1 for q in questions if q["section"] == sec)}
+    if info["style"] == "written":
+        # 本番モード needs the rules of the paper a 大問 came from, and those
+        # changed when 午後I and 午後II were merged in 令和5年度秋期.
+        used = [p for p in PM_PAPERS if any(c["paper"] == p for c in cases)]
+        out["caseCount"] = sum(1 for c in cases if c["section"] == sec)
+        out["papers"] = [{"id": p, "label": PM_PAPERS[p]["label"],
+                          "minutes": PM_PAPERS[p]["minutes"],
+                          "cases": PM_PAPERS[p]["cases"],
+                          "choose": PM_PAPERS[p]["choose"]} for p in used]
+    return out
 
 
 def write_review(doc: dict, review: list) -> None:
@@ -188,11 +322,13 @@ def write_review(doc: dict, review: list) -> None:
              "OCR は必ず誤認識するため、下の各問はページ画像と読み比べて直すこと。",
              "画像パスは `data/` からの相対。", ""]
     for qid, notes, q in review:
+        lines += [f"## {qid}", "", f"- 指摘: {' / '.join(notes)}"]
+        if q is None:                       # 午後: the case carries the pages
+            lines.append("")
+            continue
         page = q["pages"][0]
         sid, sec = qid.split("-")[0], qid.split("-")[1]
-        lines += [f"## {qid}", "",
-                  f"- 指摘: {' / '.join(notes)}",
-                  f"- ページ画像: `build/{sec}/pages/{sid}/{sid}-p{page:03d}.png`", "",
+        lines += [f"- ページ画像: `build/{sec}/pages/{sid}/{sid}-p{page:03d}.png`", "",
                   "```", q["text"], ""]
         for k in CHOICE_KEYS:
             lines.append(f"{k}  {q['choices'].get(k, '(なし)')}")
@@ -211,10 +347,12 @@ def main() -> None:
     from collections import Counter
     tc = Counter(t for q in doc["questions"] for t in q["tags"])
     for sec in doc["meta"]["sections"]:
-        print(f"  {sec['label']}: {sec['questionCount']} 問")
+        extra = f" / {sec['caseCount']} 事例" if sec.get("caseCount") else ""
+        print(f"  {sec['label']}: {sec['questionCount']} 問{extra}")
+    figs = (sum(1 for q in doc["questions"] if q.get("figures"))
+            + sum(1 for c in doc["cases"] if c.get("figures")))
     print(f"\n{doc['meta']['questionCount']} 問 / {doc['meta']['sessionCount']} 回"
-          f"  要確認 {len(review)} 問  図表 "
-          f"{sum(1 for q in doc['questions'] if q['figures'])} 問")
+          f"  要確認 {len(review)} 件  図表 {figs} 件")
     print("分野タグ:", "  ".join(f"{k}={v}" for k, v in tc.most_common()))
 
 

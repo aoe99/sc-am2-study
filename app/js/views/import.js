@@ -10,15 +10,29 @@ export default async function renderImport({ view, go }) {
 
   const status = el('p', { class: 'muted' });
   const picker = el('input', {
-    type: 'file', accept: '.json,application/json', id: 'packfile',
-    onchange: ev => ev.target.files[0] && start(ev.target.files[0]),
+    type: 'file', accept: '.json,.bin,application/json', id: 'packfile',
+    multiple: true,
+    onchange: ev => ev.target.files.length && start([...ev.target.files]),
   });
 
-  async function start(file) {
+  async function start(files) {
     picker.disabled = true;
+    // The pair can be picked together or one at a time, in either order; the
+    // questions are loaded first so the figures land on a corpus that knows
+    // about them.
+    files.sort((a, b) => (a.name.endsWith('.bin') ? 1 : 0)
+                       - (b.name.endsWith('.bin') ? 1 : 0));
+    const done = [];
     try {
-      const info = await data.importPack(file, msg => { status.textContent = msg; });
-      toast(`${info.questionCount ?? data.questions().length} 問を読み込みました`);
+      for (const f of files) {
+        const info = await data.importPack(f, msg => {
+          status.textContent = `${f.name}: ${msg}`;
+        });
+        done.push(info.figureCount != null && info.questionCount == null
+          ? `図表 ${info.figureCount} 枚`
+          : `${info.questionCount ?? 0} 問`);
+      }
+      toast(done.join(' / ') + ' を読み込みました');
       go('home');
     } catch (err) {
       status.textContent = '';
@@ -29,16 +43,28 @@ export default async function renderImport({ view, go }) {
 
   view.append(
     el('div', { class: 'card' },
-      el('h2', { text: loaded ? '問題データの入れ替え' : '問題データの読み込み' }),
+      el('h2', { text: loaded ? '問題データの追加・入れ替え' : '問題データの読み込み' }),
       loaded
-        ? el('p', { class: 'muted' },
-            `現在 ${data.questions().length} 問 / ${data.sessions().length} 回`
-            + (meta && meta.importedAt ? `（${fmtDate(meta.importedAt)} 読み込み）` : ''))
+        ? el('div', {},
+            el('p', { class: 'muted' },
+              `現在 ${data.questions().length} 問 / ${data.sessions().length} 回`
+              + (meta && meta.importedAt ? `（${fmtDate(meta.importedAt)} 読み込み）` : '')),
+            el('ul', { class: 'muted' },
+              ...data.sections().map(sec => {
+                const m = data.metaFor(sec.id) || {};
+                return el('li', { text:
+                  `${sec.label} ${sec.questionCount}問`
+                  + (sec.caseCount ? ` / ${sec.caseCount}事例` : '')
+                  + (m.generatedAt
+                     ? `  （${String(m.generatedAt).replace('T', ' ').slice(0, 16)}）` : '') });
+              })))
         : el('p', {},
             'このアプリには問題データが入っていません。手元の ',
-            el('code', { text: 'sc-data.json' }),
-            ' を選んでください。データはこの端末のブラウザ内にだけ保存され、'
-            + 'どこにも送信されません。'),
+            el('code', { text: 'sc-data-am.json' }), ' と ',
+            el('code', { text: 'sc-data-pm.json' }),
+            '（および図表の ', el('code', { text: '-figures.bin' }),
+            '）を選んでください。まとめて選べます。データはこの端末のブラウザ内にだけ'
+            + '保存され、どこにも送信されません。'),
       el('p', {},
         el('label', { class: 'btn primary', for: 'packfile', style: 'display:inline-block' },
           loaded ? '別のファイルを選ぶ' : 'ファイルを選ぶ'),
@@ -50,8 +76,9 @@ export default async function renderImport({ view, go }) {
     el('div', { class: 'card' },
       el('h2', { text: 'iPhone で使うには' }),
       el('ol', { class: 'muted' },
-        el('li', { text: 'sc-data.json を iCloud Drive に置く' }),
-        el('li', { text: 'Safari でこのページを開き、「ファイルを選ぶ」から読み込む' }),
+        el('li', { text: 'sc-data-am.json / sc-data-pm.json と、その -figures.bin を iCloud Drive に置く' }),
+        el('li', { text: 'Safari でこのページを開き、「ファイルを選ぶ」からまとめて読み込む' }),
+        el('li', { text: '午前だけ・午後だけを先に入れてもよい。後から足しても既存の学習記録は消えない' }),
         el('li', { text: '共有ボタン →「ホーム画面に追加」でアプリのように使える' })),
       el('p', { class: 'muted' },
         '一度読み込めば次回からは不要です。オフラインでも動きます。'

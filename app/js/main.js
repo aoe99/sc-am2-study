@@ -67,9 +67,11 @@ async function render() {
 
 window.addEventListener('hashchange', render);
 
-/** Leaving mid-exam by accident would be unrecoverable — warn first. */
+/** Leaving mid-exam by accident would be unrecoverable — warn first.
+ *  午後 is written back to IndexedDB as it goes, so it survives a reload; the
+ *  warning is still worth showing because the clock does not stop. */
 window.addEventListener('beforeunload', e => {
-  if (ctx.run && ctx.run.mode === 'exam' && !ctx.run.finished) {
+  if (ctx.run && ctx.run.deadline && !ctx.run.finished) {
     e.preventDefault();
     e.returnValue = '';
   }

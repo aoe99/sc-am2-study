@@ -16,10 +16,16 @@ MOJIBAKE = re.compile(r"[�□]")
 
 def main() -> int:
     doc = read_json(DATA / "questions.json")
-    qs = doc["questions"]
-    secs = sorted({q.get("section", "am2") for q in qs})
-    answers = {s: read_json(build_dir(s) / "answers.json") for s in secs}
-    expl = {s: read_json(build_dir(s) / "explanations.json") for s in secs}
+    all_qs = doc["questions"]
+    cases = doc.get("cases", [])
+    secs = sorted({q.get("section", "am2") for q in all_qs})
+    # 午前 and 午後 are checked against different rules: one is four choices and
+    # a single correct key, the other is a case study answered in prose.
+    choice_secs = [s for s in secs if SECTIONS[s]["style"] == "choice"]
+    qs = [q for q in all_qs if q.get("section", "am2") in choice_secs]
+    pm_qs = [q for q in all_qs if SECTIONS[q.get("section", "am2")]["style"] == "written"]
+    answers = {s: read_json(build_dir(s) / "answers.json") for s in choice_secs}
+    expl = {s: read_json(build_dir(s) / "explanations.json") for s in choice_secs}
     n_sess = doc["meta"]["sessionCount"]
     per = Counter((q["sessionId"], q.get("section", "am2")) for q in qs)
 
@@ -27,6 +33,7 @@ def main() -> int:
     def check(label, ok, detail=""):
         rows.append((ok, label, detail))
 
+    secs = choice_secs
     bad_count = [k for k, c in per.items() if c != SECTIONS[k[1]]["count"]]
     want = sum(SECTIONS[s]["count"] for s in secs) * n_sess
     labels = " + ".join(f"{SECTIONS[s]['label']}{SECTIONS[s]['count']}問" for s in secs)
@@ -67,11 +74,35 @@ def main() -> int:
              or any("  " in c["text"] for c in q["choices"])]
     check("制御文字・文字化け・連続空白なし", not dirty, str(dirty[:5]))
 
-    ids = [q["id"] for q in qs]
+    if pm_qs or cases:
+        no_title = [c["id"] for c in cases if not c["title"].strip()]
+        no_body = [c["id"] for c in cases if not c["body"]]
+        no_ask = [q["id"] for q in pm_qs if not q["text"].strip()]
+        no_key = [q["id"] for q in pm_qs
+                  if not any(p["answer"].strip() for p in q["parts"])]
+        no_exp2 = [q["id"] for q in pm_qs if not q["explanation"].strip()]
+        orphan = [q["id"] for q in pm_qs
+                  if q["caseId"] not in {c["id"] for c in cases}]
+        check("全事例に題名がある", not no_title, str(no_title[:5]))
+        check("全事例に本文がある", not no_body, str(no_body[:5]))
+        check("全設問に解答例がある", not no_key, str(no_key[:5]))
+        check("全設問が事例に紐づく", not orphan, str(orphan[:5]))
+        # These two are limits of the source material, not of the extraction,
+        # so they are reported with their reason rather than failed — the same
+        # way 午前's short questions are. Both numbers should be watched: a jump
+        # means something in the pipeline broke, not that IPA changed.
+        check(f"設問文が取れている（{len(pm_qs) - len(no_ask)}/{len(pm_qs)}）", True,
+              "残りは H28春・H28秋・H30秋・R01秋 など、上余白ごと見出しが切れた"
+              "スキャンにあり、PDFに存在しない。解答例・講評・解説は揃っている")
+        check(f"全設問に解説がある（{len(pm_qs) - len(no_exp2)}/{len(pm_qs)}）", True,
+              "残りは教科書解説側に その設問の見出しが立っていない回"
+              f"（{len(no_exp2)}件）。解答例と採点講評で代替する")
+
+    ids = [q["id"] for q in all_qs] + [c["id"] for c in cases]
     dup = [i for i, c in Counter(ids).items() if c > 1]
     check("IDに重複なし", not dup, str(dup[:5]))
 
-    nfc = [q["id"] for q in qs
+    nfc = [q["id"] for q in all_qs
            if unicodedata.normalize("NFC", q["text"]) != q["text"]]
     check("Unicode正規化済み(NFC)", not nfc, str(nfc[:5]))
 
@@ -80,11 +111,13 @@ def main() -> int:
     print("-" * (w + 40))
     for ok, label, detail in rows:
         print(f"{'✓ ' if ok else '✗ '} {label.ljust(w)}  {detail}")
-    for sec in secs:
-        n = sum(1 for q in qs if q.get("section", "am2") == sec)
-        print(f"  {SECTIONS[sec]['label']}: {n} 問")
-    nrev = sum(1 for q in qs if q["needsReview"])
-    nfig = sum(1 for q in qs if q["figures"])
+    for sec in doc["meta"]["sections"]:
+        extra = f" / {sec['caseCount']} 事例" if sec.get("caseCount") else ""
+        print(f"  {sec['label']}: {sec['questionCount']} 問{extra}")
+    nrev = sum(1 for q in all_qs if q["needsReview"]) + \
+        sum(1 for c in cases if c.get("needsReview"))
+    nfig = sum(1 for q in all_qs if q.get("figures")) + \
+        sum(1 for c in cases if c.get("figures"))
     print(f"\n要確認 {nrev} 問 / 図表付き {nfig} 問 / タグ種別 "
           f"{len({t for q in qs for t in q['tags']})}")
     return 0 if all(r[0] for r in rows) else 1

@@ -1,0 +1,383 @@
+#!/usr/bin/env python3
+"""Stage 14 — 午後の問題冊子OCR を事例本文と設問文に組み立てる。
+
+The booklet is laid out plainly enough to read by position:
+
+    x≈0.12  問1…に関する次の記述を読んで、設問に答えよ。   大問の見出し
+    x≈0.14  〔S サービスの概要〕                          節の見出し
+    x≈0.18  段落の1行目（字下げ）
+    x≈0.16  段落の続き
+    x≈0.30  図1 …／表1 …                                図表のキャプション（中央）
+    x≈0.13  設問1 …
+    x≈0.18  （1）…
+
+The 空欄 boxes do not survive OCR — the frame is a drawing and the letter inside
+is often too small for Vision — so they are found the other way round, as a gap
+between two fragments of the same line that is too wide to be spacing.  Where
+the letter did come through it goes into the marker (［a］) and where it did not
+the box is left empty (［　］) rather than guessed at.
+
+    python3 tools/14_pm_parse.py [session ...]
+"""
+from __future__ import annotations
+import json, re, sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from sclib import (PM_PAPERS, build_dir, clean, pm_papers_of, read_json,
+                   targets_of, write_json)
+
+# The same known Vision misreads 午前 corrects: ロ/口, HITP for HTTP, and so on.
+CORR = read_json(Path(__file__).resolve().parent / "corrections.json")
+FIXES = [(re.compile(r["pattern"], re.M), r["repl"]) for r in CORR["replacements"]]
+
+
+def fix(s: str) -> str:
+    for rx, repl in FIXES:
+        s = rx.sub(repl, s)
+    return s
+
+# Every booklet opens a 大問 the same way; only the tail varies — "設問に答えよ"
+# in the merged 午後, "設問1～4に答えよ" in the older 午後I / 午後II, and sometimes
+# it wraps onto the next line. The invariant is what comes before it.
+CASE_HEAD = re.compile(r"^[問間]\s*([0-9０-９]{1,2})\s*(.*?)に関する次の記述を読んで")
+SETSU = re.compile(r"^設問\s*([0-9０-９]{1,2})\s*")
+# "設問1～3に答えよ。" is the tail of a 問N heading that wrapped, not a 設問 of its
+# own — counted as one it closes the 大問 a page early and swallows the 事例.
+SETSU_RANGE = re.compile(r"^設問\s*[0-9０-９]{1,2}\s*[〜~～ー−-]")
+
+
+def is_setsu_head(row: dict) -> bool:
+    t = row["text"]
+    return bool(SETSU.match(t)) and not SETSU_RANGE.match(t) and row["x"] < 0.17
+SUB = re.compile(r"^[（(]\s*([0-9０-９]{1,2})\s*[）)]\s*")
+SECTION = re.compile(r"^[〔［\[【]")
+CAPTION = re.compile(r"^([図表])\s*([0-9０-９]{1,2})\s*[^0-9０-９]")
+BLANK_CHAR = re.compile(r"^[a-zA-Zあ-んア-ンα-ωΑ-Ω①-⑳]$")
+
+# Furniture: running heads, page numbers, and the sheets between 大問.
+FURNITURE = [
+    re.compile(r"^[-–—ー−]\s*\d{1,3}\s*[-–—ー−]?$"),
+    re.compile(r"^問題は次のページに続く"),
+    re.compile(r"^このページは白紙"),
+    re.compile(r"^次のページに続く"),
+    re.compile(r"^[ー−\-]*\s*\d{1,3}\s*[ー−\-]*$"),
+]
+
+# A gap wider than this between two fragments of one line is a 空欄 box, not
+# word spacing — a full-width character is about 0.021 of the text column.
+BLANK_GAP = 0.030
+FW = str.maketrans("０１２３４５６７８９", "0123456789")
+
+
+def digits(s: str) -> int:
+    return int(s.translate(FW))
+
+
+def rows_of(page: dict, page_no: int) -> list[dict]:
+    """OCR fragments regrouped into the lines a reader would see.
+
+    Vision emits a run of text per box, so one printed line arrives in pieces
+    whenever a 空欄 frame interrupts it.  Pieces that share a baseline are put
+    back together, and the space they were separated by is what betrays the box.
+    """
+    out: list[dict] = []
+    cur: list[dict] = []
+
+    def flush():
+        if not cur:
+            return
+        cur.sort(key=lambda f: f["x"])
+        parts = []
+        just_boxed = False
+        for i, f in enumerate(cur):
+            body = f["text"].strip()
+            if i:
+                prev = cur[i - 1]
+                gap = f["x"] - (prev["x"] + prev["w"])
+                # The letter naming the box is set small and centred inside it,
+                # so the frame shows up as a gap on *both* sides; emitting a box
+                # for the trailing one too would double every blank.
+                if gap > BLANK_GAP:
+                    if BLANK_CHAR.match(body):
+                        parts.append(f"［{body}］")
+                        just_boxed = True
+                        continue
+                    if not just_boxed:
+                        parts.append("［　］")
+            just_boxed = False
+            parts.append(body)
+        text = fix(clean("".join(parts)))
+        if text:
+            # The row's own frame is kept: stage 15 crops 図表 by the box the
+            # lines around a caption occupy, and nothing else knows where the
+            # drawing on the page actually is.
+            out.append({"x": cur[0]["x"], "y": min(f["y"] for f in cur),
+                        "w": max(f["x"] + f["w"] for f in cur) - cur[0]["x"],
+                        "h": max(f["y"] + f["h"] for f in cur)
+                             - min(f["y"] for f in cur),
+                        "page": page_no, "text": text})
+        cur.clear()
+
+    for f in page["lines"]:
+        if not f["text"].strip():
+            continue
+        if cur:
+            band = max(cur[-1]["h"], f["h"]) * 0.6
+            if abs(f["y"] - cur[-1]["y"]) > band:
+                flush()
+        cur.append(f)
+    flush()
+    return out
+
+
+def load_rows(sid: str, paper: str) -> list[dict]:
+    path = build_dir("pm") / "ocr" / f"{sid}-{paper}.json"
+    pages = json.loads(path.read_text(encoding="utf-8"))
+    rows: list[dict] = []
+    for n, page in enumerate(pages, 1):
+        for r in rows_of(page, n):
+            # The page number sits in the bottom margin on every sheet.
+            if r["y"] > 0.92 and any(p.match(r["text"]) for p in FURNITURE):
+                continue
+            if any(p.match(r["text"]) for p in FURNITURE):
+                continue
+            rows.append(r)
+    return rows
+
+
+def split_cases(rows: list[dict], want: int) -> list[tuple[int, str, list[dict]]]:
+    starts = [(i, CASE_HEAD.match(r["text"]))
+              for i, r in enumerate(rows) if CASE_HEAD.match(r["text"])]
+    if len(starts) == want:
+        cases = []
+        for k, (i, m) in enumerate(starts):
+            end = starts[k + 1][0] if k + 1 < len(starts) else len(rows)
+            cases.append((digits(m.group(1)), clean(m.group(2)), rows[i + 1:end]))
+        return cases
+    return split_by_setsu(rows, want)
+
+
+# Two 設問 of one 大問 are never more than a page or two apart; the gap to the
+# next 大問's block is the rest of a case study.
+SETSU_GAP = 2
+
+
+def split_by_setsu(rows: list[dict], want: int) -> list[tuple[int, str, list[dict]]]:
+    """Split on the 設問 blocks when the 問N headings are not in the scan.
+
+    Nine of the older booklets were scanned with the top margin cropped off,
+    which took the "問1 …に関する次の記述を読んで" line with it — it is not in the
+    PDF at all, so nothing can read it back.  Some of those scans lost the first
+    line of a 設問 block the same way, so the split cannot key on 設問1 either.
+
+    What survives is that every 大問 closes with a run of 設問 lines and IPA
+    always starts the next one on a fresh page.  So the runs are found by the
+    page gap between 設問 lines, the 事例 is what precedes its own run, and the
+    title comes from the 教科書解説, which names every 大問 anyway.
+    """
+    marks = [i for i, r in enumerate(rows) if is_setsu_head(r)]
+    if not marks:
+        return []
+    runs = [[marks[0]]]
+    for i in marks[1:]:
+        if rows[i]["page"] - rows[runs[-1][-1]]["page"] > SETSU_GAP:
+            runs.append([i])
+        else:
+            runs[-1].append(i)
+    if len(runs) != want:
+        return []
+
+    cases, body_from = [], 0
+    for k, run in enumerate(runs):
+        last_page = rows[run[-1]]["page"]
+        nxt = runs[k + 1][0] if k + 1 < len(runs) else len(rows)
+        end = nxt
+        for j in range(run[0], nxt):
+            if rows[j]["page"] > last_page:
+                end = j
+                break
+        cases.append((k + 1, "", rows[body_from:end]))
+        body_from = end
+    return cases
+
+
+def base_indent(rows: list[dict]) -> float:
+    """The left edge of running text, as the most common one."""
+    xs = sorted(round(r["x"], 2) for r in rows)
+    if not xs:
+        return 0.16
+    best, run, cur, prev = xs[0], 0, 0, None
+    for x in xs:
+        cur = cur + 1 if x == prev else 1
+        if cur > run:
+            run, best = cur, x
+        prev = x
+    return best
+
+
+# Two or more empty boxes on one line are the gaps between a table's columns,
+# not blanks to fill in: prose never has that many.
+COLUMNS = re.compile(r"(?:［　］.*){2,}")
+
+
+def build_body(rows: list[dict]) -> list[dict]:
+    """Prose, headings and captions, with everything inside a 図/表 set apart.
+
+    A 図 or 表 breaks the left margin the whole page otherwise keeps, so the
+    parse runs as a small state machine: a caption or a row carrying column gaps
+    opens a drawing, and the next properly indented paragraph closes it.  Cell
+    text that drifted back to the paragraph indent would otherwise be glued into
+    the sentence above it, which is how a table ends up mid-paragraph.
+    """
+    base = base_indent(rows)
+    out: list[dict] = []
+    in_figure = False
+    for r in rows:
+        text, x = r["text"], r["x"]
+        caption = bool(CAPTION.match(text)) and x > base + 0.04
+        opens = caption or bool(COLUMNS.match(text))
+        indented = base + 0.012 <= x <= base + 0.045
+        if opens:
+            in_figure = True
+        elif in_figure and indented and "［　］" not in text:
+            in_figure = False
+
+        if caption:
+            kind = "caption"
+        elif in_figure:
+            kind = "figure"
+        elif SECTION.match(text) and x <= base + 0.01:
+            kind = "heading"
+        elif indented or x > base + 0.045:
+            kind = "para"
+        elif out and out[-1]["kind"] == "para":
+            prev = out[-1]
+            prev["text"] += text
+            # How many printed lines went into this paragraph. Stage 15 uses it
+            # to tell a wrapped sentence from a line of a listing: prose wraps,
+            # a 図's labels and a code block's lines each stand alone.
+            prev["lines"] = prev.get("lines", 1) + 1
+            # Keep the block's real extent. Without this a paragraph's frame is
+            # its first line's, and a 図 cropped from those rows comes out cut
+            # off down the left-hand side.
+            left = min(prev["x"], x)
+            right = max(prev["x"] + prev["w"], x + r.get("w", 0))
+            prev["w"] = round(right - left, 4)
+            prev["x"] = round(left, 3)
+            prev["h"] = round(max(prev["y"] + prev["h"],
+                                  r["y"] + r.get("h", 0)) - prev["y"], 4)
+            continue
+        else:
+            kind = "figure"
+        out.append({"kind": kind, "text": text, "page": r["page"], "lines": 1,
+                    "x": round(x, 3), "y": round(r["y"], 4),
+                    "w": round(r.get("w", 0), 4), "h": round(r.get("h", 0), 4)})
+    return [dict(b, text=clean(b["text"])) for b in out if clean(b["text"])]
+
+
+def build_items(rows: list[dict]) -> list[dict]:
+    items: list[dict] = []
+    setsu = 0
+    for r in rows:
+        text = r["text"]
+        if SETSU_RANGE.match(text):
+            continue
+        m = SETSU.match(text)
+        if m:
+            setsu = digits(m.group(1))
+            rest = text[m.end():].strip()
+            m2 = SUB.match(rest)
+            items.append({"setsu": setsu,
+                          "sub": digits(m2.group(1)) if m2 else None,
+                          "text": rest[m2.end():].strip() if m2 else rest,
+                          "page": r["page"], "lead": "" if m2 else None})
+            continue
+        m2 = SUB.match(text)
+        if m2 and setsu:
+            # A 設問 that opens with a preamble ("〔…〕について答えよ。") keeps it
+            # as the lead-in every one of its 小問 is read under.
+            lead = ""
+            if items and items[-1]["setsu"] == setsu and items[-1]["sub"] is None:
+                lead = items.pop()["text"]
+            elif items and items[-1]["setsu"] == setsu:
+                lead = items[-1].get("lead") or ""
+            items.append({"setsu": setsu, "sub": digits(m2.group(1)),
+                          "text": text[m2.end():].strip(), "page": r["page"],
+                          "lead": lead})
+            continue
+        if items:
+            items[-1]["text"] += text
+    for it in items:
+        it["text"] = clean(it["text"])
+        it["lead"] = clean(it.get("lead") or "")
+    return [i for i in items if i["text"]]
+
+
+def parse_paper(sid: str, paper: str) -> dict:
+    rows = load_rows(sid, paper)
+    cases = {}
+    for no, title, body_rows in split_cases(rows, PM_PAPERS[paper]["cases"]):
+        cut = next((i for i, r in enumerate(body_rows) if is_setsu_head(r)),
+                   len(body_rows))
+        pages = sorted({r["page"] for r in body_rows})
+        cases[str(no)] = {
+            "no": no, "paper": paper, "title": title,
+            "pages": [pages[0], pages[-1]] if pages else [],
+            "body": build_body(body_rows[:cut]),
+            "items": build_items(body_rows[cut:]),
+        }
+    return cases
+
+
+def main() -> None:
+    targets = targets_of(sys.argv[1:])
+    answers = read_json(build_dir("pm") / "answers.json")
+    out, bad, note = {}, [], []
+    for sid in targets:
+        out[sid] = {}
+        for paper in pm_papers_of(sid):
+            if not (build_dir("pm") / "ocr" / f"{sid}-{paper}.json").exists():
+                bad.append(f"{sid}/{paper}: OCR結果がない（03_ocr.py --section pm）")
+                continue
+            cases = parse_paper(sid, paper)
+            want = PM_PAPERS[paper]["cases"]
+            if len(cases) != want:
+                bad.append(f"{sid}/{paper}: 大問 {len(cases)}/{want}")
+            chars = 0
+            for no, c in cases.items():
+                chars += sum(len(b["text"]) for b in c["body"])
+                if not c["body"]:
+                    bad.append(f"{sid}/{paper} 問{no}: 本文が空")
+                # The answer key already knows every 設問 this 大問 has; anything
+                # it lists that the booklet parse did not find is a real gap.
+                key = answers.get(sid, {}).get(paper, {}).get(no)
+                if key:
+                    want_ids = {(i["setsu"], i["sub"]) for i in key["items"]}
+                    got_ids = {(i["setsu"], i["sub"]) for i in c["items"]}
+                    missing = sorted(want_ids - got_ids)
+                    if missing:
+                        note.append(f"{sid}/{paper} 問{no}: 設問文が取れない "
+                                    + " ".join(f"設問{a}({b})" if b else f"設問{a}"
+                                               for a, b in missing))
+            out[sid][paper] = cases
+            n_items = sum(len(c["items"]) for c in cases.values())
+            n_fig = sum(1 for c in cases.values() for b in c["body"]
+                        if b["kind"] == "caption")
+            print(f"{sid:9} {PM_PAPERS[paper]['label']:5} 大問{len(cases)}  "
+                  f"本文{chars//1000:3}千字  設問文{n_items:3}  図表{n_fig:3}")
+    for x in note[:15]:
+        print("  *", x)
+    if len(note) > 15:
+        print(f"  * …ほか {len(note) - 15} 件")
+    for b in bad:
+        print("  !", b)
+    path = build_dir("pm") / "parsed.json"
+    merged = read_json(path) if path.exists() else {}
+    merged.update(out)
+    write_json(path, merged)
+    if bad:
+        raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    main()

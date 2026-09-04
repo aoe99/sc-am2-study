@@ -3,8 +3,10 @@
 **完成して稼働中。** 以降は不具合の修正と改善が中心。
 
 - 公開先: **https://aoe99.github.io/sc-am2-study/app/**（アプリ名: SC試験対策）
-- 問題データ: 19回 × （午前I 30問 + 午前II 25問）= **1,045問**
-- 検証はすべて通過（IPA解答例と教科書解説の正解一致 1,045/1,045）
+- 問題データ:
+  - 午前 19回 × （午前I 30問 + 午前II 25問）= **1,045問**
+  - 午後 19回 = **90事例 / 839設問**（記号選択112 / 語句312 / 記述415）、図表668枚
+- 検証はすべて通過（`tools/08_validate.py` の全項目が ✓）
 
 ---
 
@@ -46,15 +48,28 @@ PY
 ### 3. 作り直す
 
 ```bash
+# 午前
 python3 tools/04_parse.py   --section am1   # 抽出を変えたとき
 python3 tools/04_parse.py   --section am2
 python3 tools/05_figures.py --section am1   # 図表の切り出しを変えたとき
 python3 tools/05_figures.py --section am2
+
+# 午後（--section は取らない。区分がひとつしかない）
+python3 tools/11_pm_answers.py              # 解答例 → 設問の骨格
+python3 tools/12_pm_commentary.py           # 採点講評
+python3 tools/13_pm_explanations.py         # 教科書解説
+python3 tools/14_pm_parse.py                # OCR → 事例本文・設問文
+python3 tools/15_pm_figures.py              # 図表の切り出し
+
 python3 tools/06_build.py                   # 統合（常に必要）
-python3 tools/09_duplicates.py --apply
-python3 tools/10_pack.py                    # → data/sc-data.json
+python3 tools/09_duplicates.py --apply      # 午前だけが対象
+python3 tools/10_pack.py                    # → sc-data-{am,pm}.json + -figures.bin
 python3 tools/08_validate.py                # 全項目が ✓ になること
 ```
+
+**午後は「解答から問題文へ」の順に依存している。** `11_pm_answers` が設問の骨格
+（どの設問に、どの空欄があるか）を作り、`14_pm_parse` はその記号をOCRした問題文から
+探す。11を流し直したら14も流し直すこと。
 
 **各ステージの終了コードを必ず確認する。** 出力を `head` などで切ると SIGPIPE で
 ファイル書き込み前に落ちるのに気づけない（実際に一度やった）。
@@ -84,8 +99,13 @@ curl -s https://aoe99.github.io/sc-am2-study/app/sw.js | grep -o "sc-am2-v[0-9]*
 
 ### 6. 利用者に伝えること
 
-- **データを作り直したなら**「新しい `data/sc-data.json` の読み込みが必要」と明記する。
-  ホーム画面下部と設定画面に表示される「問題データ 2026-09-04 06:18」で判別できる
+- **データを作り直したなら**「新しいパックの読み込みが必要」と明記する。どの区分を
+  作り直したかで渡すファイルが変わる:
+  - 午前 → `data/sc-data-am.json` ＋ `data/sc-data-am-figures.bin`
+  - 午後 → `data/sc-data-pm.json` ＋ `data/sc-data-pm-figures.bin`
+
+  **区分ごとに独立している。** 午後だけ入れ直しても午前の1,045問と学習記録は残る。
+  ホーム画面下部に出る「問題データ 2026-09-04 06:18」は**選んでいる区分のもの**
 - アプリだけの変更なら読み込み直しは不要
 
 ---
@@ -97,12 +117,35 @@ curl -s https://aoe99.github.io/sc-am2-study/app/sw.js | grep -o "sc-am2-v[0-9]*
 - IndexedDB名 `sc-am2`、localStorageキー `sc-am2:settings`、書き出しの
   `kind: sc-am2-progress` を変えない。**識別子であって表示名ではない。**
   変えると読み込み済みの1,045問と学習記録が孤立する
+- **問題IDを変えない。** `states` は questionId をキーにしている。午後の
+  `R07aki-pm-1-2-3`（回-区分-大問-設問-小問）も同じで、採番を変えると自己採点の
+  履歴が全部孤立する
+- **図表を base64 でJSONに戻さない。** 午後は668枚・63MBあり、data: URI にすると
+  パックが84MBになって iPhone の Safari が落ちる。`.bin` は ArrayBuffer から
+  Blob を切り出すだけで、文字列にもJSONにもしない
 - サブセット実行（`--section am2 R05haru` のように回を指定）しても中間ファイルは
   マージ書き込みになっている。全回を消さないこと
 
 ---
 
 ## 残っている品質課題
+
+### 午後
+
+**設問文が取れているのは 767/839（91.4%）。** 残り72件は H28春・H28秋・H30秋・R01秋
+などのスキャンが**上余白ごと見出しを落としている**ため、PDFに文字が存在しない。
+解答例・採点講評・解説は揃っているので学習はできる。直すには元PDFを取り直すしかない。
+
+**解説があるのは 825/839。** 残り14件は教科書解説側にその設問の見出しが立っていない回。
+
+**図表はキャプションのある678件のうち631件（93%）を切り出せている。** 図は
+「取りこぼすより広めに取る」方針なので、上に導入文が1行入ることがある。
+
+`data/build/pm/answers.json` の `flags` に「表の列を推定」が19件。IPAの解答例PDFは
+2列の解答（`利点`／`内容` など）をテキスト層で1行に潰してしまい、折り返しと区別が
+つかない。分けたほうが原文に近いので分けているが、目視の価値がある。
+
+### 午前
 
 `data/build/review.md` に要確認179問。大半は「選択肢が表形式（画像化済み）」と
 「解説に存在しない漢字」（誤検出を半分程度含むヒント）。
@@ -122,6 +165,9 @@ curl -s https://aoe99.github.io/sc-am2-study/app/sw.js | grep -o "sc-am2-v[0-9]*
 
 ## 今後の拡張
 
-- `id` は `R07aki-am1-01` の形式で区分を含むので、午後は `pm` を足せばよい
 - `meta.sections` に問数と制限時間があるので、区分を増やしても本番モードは追従する
 - 解答履歴の `mode` は自由文字列なので、新モードを足しても既存記録と衝突しない
+- 午後の記述は自己採点なので、`answers` に書いた本文（`typed`）が溜まる。同じ設問を
+  解き直したときに前回の答案を並べて見せる余地がある
+- `commentaryRate`（正答率 高/やや高/平均/やや低/低）は保存してあるが、まだ絞り込みに
+  使っていない。「正答率が低い設問だけ」の練習は足せる

@@ -6,11 +6,14 @@
 // The store name is an identity, not a label: renaming it when the app was
 // renamed would strand every imported question and every answer already saved.
 const DB_NAME = 'sc-am2';
-const DB_VERSION = 1;
+// v2 added the 'cases' store for 午後. Opening at a higher version keeps every
+// existing store and every record in it; only the new one is created.
+const DB_VERSION = 2;
 
 export const STORES = {
   kv: 'kv',                 // meta, import info
   questions: 'questions',   // keyPath id
+  cases: 'cases',           // keyPath id — 午後の事例（本文・図表・設問の親）
   sessions: 'sessions',     // keyPath id
   assets: 'assets',         // keyPath path, value {path, blob}
   answers: 'answers',       // one record per answer, autoIncrement
@@ -28,6 +31,8 @@ function open() {
       if (!db.objectStoreNames.contains(STORES.kv)) db.createObjectStore(STORES.kv);
       if (!db.objectStoreNames.contains(STORES.questions))
         db.createObjectStore(STORES.questions, { keyPath: 'id' });
+      if (!db.objectStoreNames.contains(STORES.cases))
+        db.createObjectStore(STORES.cases, { keyPath: 'id' });
       if (!db.objectStoreNames.contains(STORES.sessions))
         db.createObjectStore(STORES.sessions, { keyPath: 'id' });
       if (!db.objectStoreNames.contains(STORES.assets))
@@ -69,6 +74,19 @@ export const getAll = store => run(store, 'readonly', s => wrap(s.getAll()));
 export const put = (store, value, key) =>
   run(store, 'readwrite', s => wrap(key === undefined ? s.put(value) : s.put(value, key)));
 export const del = (store, key) => run(store, 'readwrite', s => wrap(s.delete(key)));
+
+/** Delete many keys in one transaction. */
+export function delMany(store, keys) {
+  if (!keys.length) return Promise.resolve(0);
+  return open().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction(store, 'readwrite');
+    const os = tx.objectStore(store);
+    for (const k of keys) os.delete(k);
+    tx.oncomplete = () => resolve(keys.length);
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  }));
+}
 export const clear = store => run(store, 'readwrite', s => wrap(s.clear()));
 export const count = store => run(store, 'readonly', s => wrap(s.count()));
 

@@ -1,4 +1,4 @@
-"""Shared helpers for the SC 午前II extraction pipeline."""
+"""Shared helpers for the SC 午前/午後 extraction pipeline."""
 from __future__ import annotations
 import json, os, re, subprocess, unicodedata
 from pathlib import Path
@@ -39,12 +39,37 @@ CHOICE_KEYS = ["ア", "イ", "ウ", "エ"]
 
 # 午前I is the 高度共通 paper (30問50分); 午前II is the SC-specific one (25問40分).
 # Both are 4-choice multiple choice with the same booklet layout, so the whole
-# pipeline is shared and only these numbers differ.
+# pipeline is shared and only these numbers differ.  午後 is a different animal —
+# long case studies answered in prose — so it carries "style": "written" and runs
+# through its own stages (11..14) instead of 01..05.
 SECTIONS = {
-    "am1": {"code": "1", "dir": "午前I", "label": "午前Ⅰ", "count": 30, "minutes": 50},
-    "am2": {"code": "2", "dir": "午前II", "label": "午前Ⅱ", "count": 25, "minutes": 40},
+    "am1": {"code": "1", "dir": "午前I", "label": "午前Ⅰ", "count": 30, "minutes": 50,
+            "style": "choice"},
+    "am2": {"code": "2", "dir": "午前II", "label": "午前Ⅱ", "count": 25, "minutes": 40,
+            "style": "choice"},
+    "pm":  {"code": "3", "dir": "午後", "label": "午後", "count": 0, "minutes": 150,
+            "style": "written"},
 }
 DEFAULT_SECTION = "am2"
+CHOICE_SECTIONS = [s for s, v in SECTIONS.items() if v["style"] == "choice"]
+
+# 午後 has been one 150分 paper since 令和5年度秋期.  Before that the same sitting
+# ran two: 午後I (90分, 3問中2問) and 午後II (120分, 2問中1問).  They are one
+# section in the app — you study them as one body of case studies — but the
+# booklets are separate files and the 本番 timings differ, so each 大問 remembers
+# which paper it came from.
+PM_PAPERS = {
+    "pm":  {"code": "3", "dir": "午後",  "label": "午後",  "minutes": 150, "cases": 4, "choose": 2},
+    "pm1": {"code": "3", "dir": "午後I",  "label": "午後Ⅰ", "minutes": 90,  "cases": 3, "choose": 2},
+    "pm2": {"code": "4", "dir": "午後II", "label": "午後Ⅱ", "minutes": 120, "cases": 2, "choose": 1},
+}
+MERGED_PM_FROM = "R05aki"
+
+
+def pm_papers_of(sid: str) -> list[str]:
+    """Which 午後 booklets a sitting shipped."""
+    i = SESSION_IDS.index(sid)
+    return ["pm"] if i >= SESSION_IDS.index(MERGED_PM_FROM) else ["pm1", "pm2"]
 
 
 def section_of(argv) -> str:
@@ -81,10 +106,18 @@ def exam_name(sid: str) -> str:
             if sid in ("H28haru", "H28aki") else "情報処理安全確保支援士試験")
 
 
-def pdf_path(sid: str, kind: str, section: str = DEFAULT_SECTION) -> Path:
-    """kind: '1問題' | '2解答例' | '4教科書解説'"""
+def pdf_path(sid: str, kind: str, section: str = DEFAULT_SECTION,
+             paper: str | None = None) -> Path:
+    """kind: '1問題' | '2解答例' | '3採点講評' | '4教科書解説'
+
+    採点講評 exists only for 午後.  For 午後, `paper` picks the booklet
+    (pm / pm1 / pm2); it defaults to the only one that sitting had.
+    """
     prefix = dict((s[0], s[4]) for s in SESSIONS)[sid]
-    sec = SECTIONS[section]
+    if section == "pm":
+        sec = PM_PAPERS[paper or pm_papers_of(sid)[0]]
+    else:
+        sec = SECTIONS[section]
     return PDF_ROOT / sid / f"{prefix}_{sec['code']}_{sec['dir']}_{kind}.pdf"
 
 
@@ -112,6 +145,22 @@ def clean(s: str) -> str:
     s = re.sub(r"[ \t]+", " ", s)
     s = re.sub(r" *\n *", "\n", s)
     return s.strip()
+
+
+# IPA sets ふりがな as its own text run, and PDFKit emits the reading just before
+# the character it annotates: 脆弱性 comes back as "ぜい\n脆\n弱性".  Only 脆 is
+# rubied anywhere in this corpus, so the rule names the pair instead of guessing
+# at every short hiragana run — "の I" is a particle, not a reading.
+RUBY = [("ぜい", "脆")]
+
+
+def strip_ruby(s: str) -> str:
+    for reading, base in RUBY:
+        s = re.sub(rf"{reading}\s*{base}\s*", base, s)
+        # Some readings end up a line away from the character they belong to.
+        # 「ぜい」 is not a word on its own, so a lone one is always the leftover.
+        s = re.sub(rf"(?m)^\s*{reading}\s*$\n?", "", s)
+    return s
 
 
 def dwidth(s: str) -> int:

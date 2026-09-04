@@ -1,4 +1,4 @@
-/* 情報処理安全確保支援士 午前II — 素のCSS。ビルド工程なし。 */
+/* 情報処理安全確保支援士 午前Ⅰ・午前Ⅱ・午後 — 素のCSS。ビルド工程なし。 */
 
 :root {
   --font-scale: 1;
@@ -287,6 +287,132 @@ svg.chart .fill { fill: var(--accent); }
 svg.chart .grid { stroke: var(--line); stroke-width: 1; }
 svg.chart .line { fill: none; stroke: var(--accent); stroke-width: 2; }
 svg.chart .dot { fill: var(--accent); }
+
+/* --- 午後 ---------------------------------------------------------------- */
+
+.resume { border-left: 3px solid var(--accent); }
+
+.casetitle { font-size: 1.05rem; margin: 4px 0 6px; }
+
+/* The 事例 is ten pages of scenario read against every 設問 under it, so it is
+   set narrower and quieter than the question itself — reference, not prompt. */
+.casebody {
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--surface-2);
+  padding: 12px 14px; margin: 0 0 14px;
+  max-height: 62vh; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  font-size: .94em;
+}
+.casebody p { margin: 0 0 .7em; }
+.casebody h3 { font-size: .96rem; margin: 1.2em 0 .4em; }
+.casebody .cap { color: var(--fg-dim); font-size: .84rem; margin: .6em 0 .2em; }
+/* Table and diagram text survives OCR only as fragments; it is shown as found
+   rather than reflowed into prose it never was. */
+.casebody .figtext {
+  margin: 0 0 .2em; padding: 2px 8px;
+  border-left: 2px solid var(--line);
+  color: var(--fg-dim); font-size: .8rem; line-height: 1.6;
+  white-space: pre-wrap; word-break: break-word; font-family: inherit;
+}
+.casebody .intent { margin: 0 0 10px; }
+.casebody summary { cursor: pointer; color: var(--fg-dim); font-size: .86rem; }
+
+.qtext .setsu {
+  display: inline-block; font-weight: 700; margin-bottom: 6px;
+  color: var(--accent);
+}
+.qtext .lead { color: var(--fg-dim); font-size: .9em; margin: 0 0 .4em; }
+
+.answers { display: flex; flex-direction: column; gap: 10px; margin: 14px 0; }
+label.answer { display: flex; gap: 10px; align-items: flex-start; }
+label.answer .blank {
+  flex: 0 0 auto; min-width: 2.4em; padding-top: 8px;
+  font-weight: 700; color: var(--accent); text-align: center;
+}
+label.answer textarea {
+  flex: 1; min-width: 0; min-height: var(--tap);
+  padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px;
+  background: var(--surface); color: var(--fg);
+  font: inherit; line-height: 1.7; resize: vertical;
+}
+label.answer textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+button.wide { width: 100%; }
+
+.reveal { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 12px; }
+.reveal h3 { font-size: .95rem; margin: 16px 0 8px; display: flex; gap: 8px; align-items: center; }
+.reveal h3:first-child { margin-top: 0; }
+
+/* Your words above IPA's, one 空欄 to a row — the comparison is the exercise. */
+.keytable { display: flex; flex-direction: column; gap: 8px; }
+.keyrow {
+  display: flex; gap: 10px;
+  border: 1px solid var(--line); border-left-width: 3px; border-radius: 10px;
+  padding: 8px 12px; background: var(--surface-2);
+}
+.keyrow.ok { border-left-color: var(--ok); background: var(--ok-bg); }
+.keyrow.ng { border-left-color: var(--ng); background: var(--ng-bg); }
+.keyrow .blank { flex: 0 0 auto; min-width: 2.2em; font-weight: 700; color: var(--accent); }
+.keyrow > div { min-width: 0; flex: 1; }
+.keyrow p { margin: 0; }
+.keyrow .mine { color: var(--fg-dim); font-size: .92em; }
+.keyrow .mine::before { content: '自分: '; }
+.keyrow .key { margin-top: 2px; }
+.keyrow .key::before { content: '解答例: '; color: var(--fg-dim); font-size: .84em; }
+.keyrow .key.alt { font-size: .92em; color: var(--fg-dim); }
+.keyrow .key.alt::before { content: ''; }
+
+.commentary {
+  border-left: 3px solid var(--warn); border-radius: 0 10px 10px 0;
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
+  padding: 10px 14px; font-size: .94em;
+}
+.commentary p { margin: 0 0 .6em; }
+.commentary p:last-child { margin-bottom: 0; }
+
+.explain-fold { margin-top: 14px; }
+.explain-fold summary { cursor: pointer; color: var(--fg-dim); font-size: .88rem; min-height: 32px; }
+
+.chip.rate { cursor: default; border-style: dashed; }
+.chip.rate-lo { color: var(--ng); border-color: var(--ng); }
+.chip.rate-mid { color: var(--fg-dim); }
+.chip.rate-hi { color: var(--ok); border-color: var(--ok); }
+
+.marks { display: flex; gap: 8px; flex-wrap: wrap; }
+button.mark {
+  flex: 1; min-width: 96px; min-height: var(--tap);
+  border: 1px solid var(--line); border-radius: 10px; background: var(--surface);
+  font: inherit; font-weight: 600; color: var(--fg-dim); cursor: pointer;
+}
+button.mark.ok[aria-pressed='true'] { background: var(--ok-bg); border-color: var(--ok); color: var(--ok); }
+button.mark.ng[aria-pressed='true'] { background: var(--ng-bg); border-color: var(--ng); color: var(--ng); }
+button.mark.partial[aria-pressed='true'] {
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+  border-color: var(--warn); color: var(--warn);
+}
+
+.qnav-cell.ok { background: var(--ok-bg); border-color: var(--ok); color: var(--ok); }
+.qnav-cell.ng { background: var(--ng-bg); border-color: var(--ng); color: var(--ng); }
+.qnav-cell.partial {
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+  border-color: var(--warn); color: var(--warn);
+}
+.qnav-label {
+  grid-column: 1 / -1; color: var(--fg-dim); font-size: .76rem;
+  margin-top: 4px;
+}
+
+.caselist { display: flex; flex-direction: column; gap: 8px; }
+button.caseitem {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+  width: 100%; min-height: var(--tap); padding: 10px 14px; text-align: left;
+}
+button.caseitem .casen { color: var(--fg-dim); font-size: .78rem; }
+button.caseitem .casettl { font-weight: 600; line-height: 1.4; }
+
+.ok { color: var(--ok); }
+.ng { color: var(--ng); }
+.partial { color: var(--warn); }
 
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }

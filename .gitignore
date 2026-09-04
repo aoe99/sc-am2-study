@@ -1,7 +1,7 @@
 # 抽出したデータは著作物。リポジトリにも公開先にも含めない。
-data/
-bin/
+data
+bin
 .DS_Store
 __pycache__/
 app/_test-data.json
-app/sc-data.json
+app/sc-data*.json

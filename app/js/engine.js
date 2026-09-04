@@ -9,15 +9,60 @@ export const MODES = {
   exam:     { label: '本番', timed: true,  reveal: false },
   review:   { label: '復習', timed: false, reveal: true },
   session:  { label: '年度別', timed: false, reveal: true },
+  case:     { label: '事例別', timed: false, reveal: true },
 };
 
 /** 午前I is 30問50分, 午前II is 25問40分 — both read from the imported pack. */
-export function examConfig(section) {
+export function examConfig(section, paper) {
   const info = data.sectionInfo(section);
+  if (info.style === 'written') {
+    const papers = info.papers || [];
+    const p = papers.find(x => x.id === paper) || papers[0] || {};
+    return { count: 0, minutes: p.minutes || 150, cases: p.cases || 4,
+             choose: p.choose || 2, paper: p.id };
+  }
   return { count: info.count || 25, minutes: info.minutes || 40 };
 }
 
 export const PASS_RATIO = 0.6;   // 25問中15問
+
+// --- 採点 -----------------------------------------------------------------
+
+export const PARTIAL = leitner.PARTIAL;
+
+/** Fold away everything that is not the answer: spacing, punctuation, width. */
+export function normalize(s) {
+  return String(s == null ? '' : s)
+    .normalize('NFKC')
+    .replace(/[\s\u3000]+/g, '')
+    .replace(/[，、,]/g, ',')
+    .replace(/[。．.]+$/g, '')
+    .replace(/["'“”‘’`´]/g, '')
+    .toLowerCase();
+}
+
+/** Did this typed answer match the printed one closely enough to say so?
+ *
+ *  Only 記号 and short 語句 are decided here. A 記述 answer is graded by the
+ *  person who wrote it against the 解答例 and the 採点講評 — no string comparison
+ *  can tell "組織的な対策が抜けている" from a wording difference.
+ */
+export function autoMark(part, typed) {
+  if (!part || part.kind === 'essay') return null;
+  const got = normalize(typed);
+  if (!got) return false;
+  const want = [part.answer, ...(part.options || [])].map(normalize).filter(Boolean);
+  return want.includes(got);
+}
+
+/** The verdict a whole 設問 gets from its parts, or null if any needs a human. */
+export function autoResult(q, typed) {
+  if (!q || !q.parts || !q.parts.length) return null;
+  const marks = q.parts.map((p, i) => autoMark(p, (typed || [])[i]));
+  if (marks.some(m => m === null)) return null;
+  if (marks.every(Boolean)) return true;
+  return marks.some(Boolean) ? PARTIAL : false;
+}
 
 /** Collapse re-used questions to one entry, preferring the earliest sitting. */
 function dedupe(list) {
@@ -44,6 +89,19 @@ export function build(opts, states) {
   const stateBy = new Map((states || []).map(s => [s.questionId, s]));
   let pool = data.questions().filter(q => data.sectionOf(q) === opts.section);
 
+  // 午後 is answered a 大問 at a time: the ten pages of 事例 are the point, and
+  // the 設問 only make sense read against them in order.
+  if (opts.mode === 'case') {
+    const ids = opts.caseIds && opts.caseIds.length ? opts.caseIds : [opts.caseId];
+    const order = new Map(ids.map((id, i) => [id, i]));
+    pool = pool.filter(q => order.has(q.caseId));
+    return {
+      list: pool.slice().sort((a, b) =>
+        order.get(a.caseId) - order.get(b.caseId) || a.no - b.no),
+      stateBy,
+    };
+  }
+
   if (opts.mode === 'session') {
     pool = pool.filter(q => q.sessionId === opts.sessionId);
     return { list: pool.slice().sort((a, b) => a.no - b.no), stateBy };
@@ -53,6 +111,11 @@ export function build(opts, states) {
     pool = pool.filter(q => opts.sessionIds.includes(q.sessionId));
   if (opts.tags && opts.tags.length)
     pool = pool.filter(q => (q.tags || []).some(t => opts.tags.includes(t)));
+
+  if (opts.caseIds && opts.caseIds.length)
+    pool = pool.filter(q => opts.caseIds.includes(q.caseId));
+  if (opts.kinds && opts.kinds.length)
+    pool = pool.filter(q => opts.kinds.includes(q.answerKind));
 
   if (opts.mode === 'review') {
     const now = Date.now();
@@ -76,43 +139,73 @@ export function build(opts, states) {
 }
 
 export function createRun(list, opts) {
+  const written = data.isWritten(opts.section);
+  const timed = opts.mode === 'exam' || (written && opts.minutes > 0);
+  const minutes = opts.minutes || examConfig(opts.section, opts.paper).minutes;
   return {
     mode: opts.mode,
-    grading: opts.mode === 'exam' ? 'end' : (opts.grading || 'immediate'),
-    shuffleChoices: !!opts.shuffleChoices,
+    written,
+    // 午後 is never marked as you go: there is no key to check against until
+    // you have written the answer and read the 解答例 next to it.
+    grading: (opts.mode === 'exam' || written) ? 'end' : (opts.grading || 'immediate'),
+    shuffleChoices: !written && !!opts.shuffleChoices,
     startedAt: Date.now(),
     section: opts.section,
-    deadline: opts.mode === 'exam'
-      ? Date.now() + examConfig(opts.section).minutes * 60000 : null,
+    paper: opts.paper || null,
+    caseIds: opts.caseIds || null,
+    deadline: timed ? Date.now() + minutes * 60000 : null,
     index: 0,
     items: list.map(q => ({
-      id: q.id, selected: null, correct: null,
+      id: q.id, selected: null, correct: null, result: null,
+      typed: written ? (q.parts || [{}]).map(() => '') : null,
       shownAt: 0, elapsedMs: 0, revealed: false,
     })),
     sessionLabel: opts.sessionLabel || null,
   };
 }
 
-export const scoreOf = run => run.items.filter(i => i.correct === true).length;
-export const answeredCount = run => run.items.filter(i => i.selected !== null).length;
-export const passed = run => scoreOf(run) / run.items.length >= PASS_RATIO;
+export const scoreOf = run => run.items.filter(i => i.result === true).length;
+export const partialCount = run => run.items.filter(i => i.result === PARTIAL).length;
+/** A 記述 answer counts as answered once it has been written, marked or not. */
+export const answeredCount = run => run.items.filter(
+  i => (run.written ? (i.typed || []).some(t => t && t.trim()) : i.selected !== null)
+       || i.result !== null).length;
+export const markedCount = run => run.items.filter(i => i.result !== null).length;
+/** 午後 is 60% too, and a half-mark is worth half a question. */
+export const scoreRatio = run =>
+  run.items.length
+    ? (scoreOf(run) + partialCount(run) * 0.5) / run.items.length : 0;
+export const passed = run => scoreRatio(run) >= PASS_RATIO;
 
-/** Record one answer against the run and return the updated Leitner state. */
-export function grade(run, item, key, prevState) {
+/**
+ * Record one answer against the run and return the updated Leitner state.
+ * `value` is the chosen key for 午前, or true / PARTIAL / false for 午後.
+ */
+export function grade(run, item, value, prevState) {
   const q = data.byId(item.id);
-  item.selected = key;
-  item.correct = key === q.answer;
+  if (run.written) {
+    item.result = value;
+    item.correct = value === true;
+  } else {
+    item.selected = value;
+    item.correct = value === q.answer;
+    item.result = item.correct;
+  }
   // A paper graded at the end already timed each answer as it was given;
   // measuring again here would bill the whole rest of the sitting to it.
   if (!item.elapsedMs) item.elapsedMs = item.shownAt ? Date.now() - item.shownAt : 0;
-  const next = leitner.advance(prevState || leitner.blank(item.id), item.correct);
+  const next = leitner.advance(prevState || leitner.blank(item.id), item.result);
   return {
     state: next,
     answer: {
       questionId: item.id,
       answeredAt: Date.now(),
-      selected: key,
+      selected: run.written ? null : value,
+      // What was actually written is kept: re-reading your own wrong wording
+      // beside the 解答例 is most of what makes a 記述 answer stick.
+      typed: run.written ? (item.typed || []).slice() : null,
       correct: item.correct,
+      result: item.result,
       mode: run.mode,
       elapsedMs: item.elapsedMs,
     },
