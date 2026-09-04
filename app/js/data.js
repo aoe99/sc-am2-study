@@ -298,8 +298,11 @@ export const sessionsIn = section =>
 // every keystroke and every mark, and picked up from the home screen.
 
 export const saveRun = run =>
-  run ? db.put(db.STORES.kv, { ...run, savedAt: Date.now() }, 'run')
-      : Promise.resolve();
+  // A finished run is never resumed, and writing one back after the screen has
+  // already deleted it would put the record straight back.
+  (run && !run.finished)
+    ? db.put(db.STORES.kv, { ...run, savedAt: Date.now() }, 'run')
+    : Promise.resolve();
 export const loadRun = () => db.get(db.STORES.kv, 'run');
 export const clearRun = () => db.del(db.STORES.kv, 'run');
 

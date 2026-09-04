@@ -1,7 +1,7 @@
 // Offline shell only. The question data lives in IndexedDB and is never
 // cached here — it is copyrighted and must not leave the device.
 
-const VERSION = 'sc-am2-v16';
+const VERSION = 'sc-am2-v17';
 const SHELL = [
   './', './index.html', './manifest.webmanifest',
   './css/app.css',

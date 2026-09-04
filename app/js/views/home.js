@@ -54,9 +54,17 @@ export default async function renderHome({ view, extra, go, ctx }) {
   // A 午後 sitting is 150 minutes; it will be interrupted. The run is written
   // back as it is answered, so the way back into it belongs here.
   const saved = ctx ? await data.loadRun() : null;
-  if (saved && !saved.finished && saved.items && saved.items.length) {
-    const done = saved.items.filter(i =>
-      i.result !== null || (i.typed || []).some(t => t && t.trim())).length;
+  // 午前 counts a chosen key, 午後 a written answer or a mark. A run with none
+  // of those has nothing to resume — and leaving one on screen is what showed
+  // "中断した学習 0問" for good after any finished sitting.
+  const doneOf = r => (r.items || []).filter(i =>
+    i.result !== null || i.selected != null
+    || (i.typed || []).some(t => t && t.trim())).length;
+  const worthResuming = saved && !saved.finished && saved.items && saved.items.length
+    && (doneOf(saved) > 0 || saved.deadline);
+  if (saved && !worthResuming) await data.clearRun();
+  if (worthResuming) {
+    const done = doneOf(saved);
     const secInfo = data.sectionInfo(saved.section);
     view.append(el('div', { class: 'card resume' },
       el('h2', { text: '中断した学習があります' }),

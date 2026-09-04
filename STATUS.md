@@ -117,6 +117,8 @@ curl -s https://aoe99.github.io/sc-am2-study/app/sw.js | grep -o "sc-am2-v[0-9]*
 - IndexedDB名 `sc-am2`、localStorageキー `sc-am2:settings`、書き出しの
   `kind: sc-am2-progress` を変えない。**識別子であって表示名ではない。**
   変えると読み込み済みの1,045問と学習記録が孤立する
+- **走行状態（kv の `run`）は、解答画面が保存と削除の両方をすること。** 保存だけして
+  削除しないと、採点し終えた走行が残り続けてホームに「中断した学習 0問」が出続ける
 - **問題IDを変えない。** `states` は questionId をキーにしている。午後の
   `R07aki-pm-1-2-3`（回-区分-大問-設問-小問）も同じで、採番を変えると自己採点の
   履歴が全部孤立する

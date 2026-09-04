@@ -53,6 +53,10 @@ async function renderQuizAm({ view, extra, go, ctx }) {
 
   function confirmQuit() {
     if (engine.answeredCount(run) === 0 || confirm('中断しますか？ ここまでの解答は保存されています。')) {
+      // Nothing answered means nothing to come back to; leaving the record
+      // behind is what put a permanent "中断した学習 0問" on the home screen.
+      if (engine.answeredCount(run) === 0) data.clearRun();
+      else data.saveRun(run);
       ctx.run = null;
       go('home');
     }
@@ -66,6 +70,7 @@ async function renderQuizAm({ view, extra, go, ctx }) {
       // settles the whole run in one pass.
       item.selected = key;
       item.elapsedMs = item.shownAt ? Date.now() - item.shownAt : 0;
+      data.saveRun(run);
       draw();
       return;
     }
@@ -75,20 +80,23 @@ async function renderQuizAm({ view, extra, go, ctx }) {
     states.set(item.id, state);
     await data.putState(state);
     await data.addAnswer(answer);
+    await data.saveRun(run);
     draw();
   }
 
   function next() {
-    if (run.index < run.items.length - 1) { run.index += 1; draw(); }
+    if (run.index < run.items.length - 1) { run.index += 1; data.saveRun(run); draw(); }
     else finish();
   }
 
   function prev() {
-    if (run.index > 0) { run.index -= 1; draw(); }
+    if (run.index > 0) { run.index -= 1; data.saveRun(run); draw(); }
   }
 
   function jump(i) {
-    if (i >= 0 && i < run.items.length) { run.index = i; showNav = false; draw(); }
+    if (i >= 0 && i < run.items.length) {
+      run.index = i; showNav = false; data.saveRun(run); draw();
+    }
   }
 
   function navPanel() {
@@ -127,6 +135,7 @@ async function renderQuizAm({ view, extra, go, ctx }) {
     if (timerId) clearInterval(timerId);
     ctx.lastResult = run;
     ctx.run = null;
+    data.clearRun();
     go('result');
   }
 
