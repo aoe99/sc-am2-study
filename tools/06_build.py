@@ -117,6 +117,25 @@ def pm_commentary(comm: dict, setsu: int, sub) -> tuple[str, str | None]:
     return ((hit or {}).get("text", ""), (hit or {}).get("rate"))
 
 
+# "図8中の c ～ e に入れる" is a range over the blanks a 設問 has, and the answer
+# key names every one of them. Where OCR lost the letter inside a frame or read
+# it as something else (e as N), the ends of the range are still recoverable:
+# a range runs from the first blank to the last. Four 設問 in the corpus are
+# written this way, few enough to have checked each one by eye.
+# The frame of a box is read as its own fragment often enough that one printed
+# box arrives as two ("［c］［　］"), so both ends of the range absorb whatever
+# run of boxes and stray letters sits there.
+BOXISH = r"(?:［[^］]{0,3}］|■|[A-Za-zａ-ｚ]{1,2})"
+PM_RANGE = re.compile(rf"(?:{BOXISH}\s*){{1,3}}[~～ー−\-]\s*(?:{BOXISH}\s*){{1,3}}")
+
+
+def pm_fix_range(text: str, parts: list[dict]) -> str:
+    labels = [p["label"] for p in parts if p["label"]]
+    if not text or len(labels) < 2:
+        return text
+    return PM_RANGE.sub(f"［{labels[0]}］～［{labels[-1]}］", text, count=1)
+
+
 def build_pm(targets: list[str]) -> tuple[list, list, list]:
     root = build_dir("pm")
     answers = read_json(root / "answers.json")
@@ -193,7 +212,7 @@ def build_pm(targets: list[str]) -> tuple[list, list, list]:
                         "caseId": case_id,
                         "no": no * 100 + n,
                         "setsu": setsu, "sub": sub, "label": item["label"],
-                        "text": ask.get("text", ""),
+                        "text": pm_fix_range(ask.get("text", ""), item["parts"]),
                         "lead": ask.get("lead", ""),
                         "answerKind": item["kind"],
                         "parts": item["parts"],

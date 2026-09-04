@@ -126,6 +126,11 @@ def apply_fixes(s: str) -> str:
     return s
 
 
+# Punctuation printed between a choice marker and its text. A half-width dot
+# counts only when a space follows, so a term that genuinely opens with one
+# (".NET") is left alone.
+MARKER_SEP = re.compile(r"^(?:[：:．，、。]|\.(?=\s))\s*")
+
 DROP_SKIP = re.compile(r"[\s，,、。．.・:：]")
 recovered: list[str] = []
 rejected: list[str] = []
@@ -565,6 +570,10 @@ def parse(sid: str) -> list[dict]:
                 # not still carry a glyph for it. Cut only a marker or a stray
                 # symbol — a letter or digit there is the answer ("Java").
                 raw = raw[1:]
+            # The marker is often set with a separator after it ("ア．", "ウ：").
+            # Dropping the marker glyph leaves that punctuation at the head of
+            # the answer, which is how "IPsec" came out as ". IPsec".
+            raw = MARKER_SEP.sub("", raw.lstrip(" 　"), count=1)
             return norm(raw.lstrip(" 　"))
 
         bare = bool(choices) and any(_bare(v[0]) for v in choices.values())
