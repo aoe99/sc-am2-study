@@ -19,9 +19,11 @@ import { figure } from '../figures.js';
 const CIRCLED = /[①-⑳]/g;
 // Anything in the 事例 a 設問 can point at: a 下線's circled number, a 図/表 by
 // name, and a 空欄 whose letter the scan kept inside its frame.
-// The empty form is matched too: with the table rules and diagram spacing no
-// longer read as frames, what is left is mostly real, and a 空欄 the reader
-// cannot pick out of the page is the thing this whole screen is for.
+// The empty form is matched too, but only so it can be rendered plainly. A
+// frame that kept its letter is certainly a 空欄 and is called out; an empty one
+// cannot be told from the spacing of a diagram or the rule between two columns
+// — 918 remain in the 事例 against 537 that carry a letter — so highlighting
+// them all pointed the reader at the wrong thing more often than the right one.
 const ANCHOR = /[①-⑳]|［\s*([^］\s]{1,3})?\s*］/g;
 const UNDERLINE_REF = /下線\s*([①-⑳])/g;
 const FIG_REF = /([図表])\s*([0-9０-９]{1,2})/g;
@@ -183,11 +185,11 @@ export default async function renderQuizPm({ view, extra, go, ctx }) {
     let last = 0;
     for (const m of String(text).matchAll(ANCHOR)) {
       if (m.index > last) node.append(text.slice(last, m.index));
-      node.append(m[0].startsWith('［')
-        // Only a frame that kept its letter can be pointed at by name; the rest
-        // are shown but not anchored.
-        ? el('span', { class: 'uline blank', dataset: m[1] ? { blank: m[1] } : {} }, m[0])
-        : el('span', { class: 'uline', dataset: { uline: m[0] } }, m[0]));
+      node.append(!m[0].startsWith('［')
+        ? el('span', { class: 'uline', dataset: { uline: m[0] } }, m[0])
+        : m[1]
+          ? el('span', { class: 'uline blank', dataset: { blank: m[1] } }, m[0])
+          : m[0]);                          // an empty frame: shown as it reads
       last = m.index + m[0].length;
     }
     node.append(text.slice(last));
