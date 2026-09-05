@@ -99,60 +99,102 @@ def digits(s: str) -> int:
     return int(s.translate(FW))
 
 
+# Gaps at the same x on three or more lines of a page are the rules between a
+# table's columns, not 空欄 frames. 0.015 of the page width is about half a
+# character, which is as far as OCR moves a column edge between rows.
+COLUMN_TOL = 0.015
+COLUMN_MIN = 3
+
+
+def column_edges(rows: list[dict]) -> list[float]:
+    """Where this page's table columns sit, from the gaps that line up."""
+    xs = sorted(f["x"] for r in rows for f in r["gaps"])
+    edges, run = [], []
+    for x in xs:
+        if run and x - run[0] > COLUMN_TOL:
+            if len(run) >= COLUMN_MIN:
+                edges.append(sum(run) / len(run))
+            run = []
+        run.append(x)
+    if len(run) >= COLUMN_MIN:
+        edges.append(sum(run) / len(run))
+    return edges
+
+
 def rows_of(page: dict, page_no: int) -> list[dict]:
     """OCR fragments regrouped into the lines a reader would see.
 
     Vision emits a run of text per box, so one printed line arrives in pieces
     whenever a 空欄 frame interrupts it.  Pieces that share a baseline are put
     back together, and the space they were separated by is what betrays the box.
+
+    Most of those spaces are not boxes, though.  A table's columns are separated
+    by the same kind of gap, and there are far more tables than 空欄 in these
+    booklets — 5,154 empty frames against 537 that carry a letter.  Printed as
+    boxes they made the 事例 unreadable: every 設問 that says "本文中の［ ］" sent
+    the reader hunting through a page of identical empty brackets.  So the gaps
+    are collected first, the ones that line up down the page are taken for
+    column rules, and only the rest become boxes.
     """
-    out: list[dict] = []
+    lines: list[list[dict]] = []
     cur: list[dict] = []
-
-    def flush():
-        if not cur:
-            return
-        cur.sort(key=lambda f: f["x"])
-        parts = []
-        just_boxed = False
-        for i, f in enumerate(cur):
-            body = f["text"].strip()
-            if i:
-                prev = cur[i - 1]
-                gap = f["x"] - (prev["x"] + prev["w"])
-                # The letter naming the box is set small and centred inside it,
-                # so the frame shows up as a gap on *both* sides; emitting a box
-                # for the trailing one too would double every blank.
-                if gap > BLANK_GAP:
-                    if BLANK_CHAR.match(body):
-                        parts.append(f"［{body}］")
-                        just_boxed = True
-                        continue
-                    if not just_boxed:
-                        parts.append("［　］")
-            just_boxed = False
-            parts.append(body)
-        text = BOX_GLYPH.sub("［　］", fix(clean("".join(parts))))
-        if text:
-            # The row's own frame is kept: stage 15 crops 図表 by the box the
-            # lines around a caption occupy, and nothing else knows where the
-            # drawing on the page actually is.
-            out.append({"x": cur[0]["x"], "y": min(f["y"] for f in cur),
-                        "w": max(f["x"] + f["w"] for f in cur) - cur[0]["x"],
-                        "h": max(f["y"] + f["h"] for f in cur)
-                             - min(f["y"] for f in cur),
-                        "page": page_no, "text": text})
-        cur.clear()
-
     for f in page["lines"]:
         if not f["text"].strip():
             continue
         if cur:
             band = max(cur[-1]["h"], f["h"]) * 0.6
             if abs(f["y"] - cur[-1]["y"]) > band:
-                flush()
+                lines.append(cur); cur = []
         cur.append(f)
-    flush()
+    if cur:
+        lines.append(cur)
+
+    rows = []
+    for frags in lines:
+        frags.sort(key=lambda f: f["x"])
+        gaps = []
+        for i in range(1, len(frags)):
+            space = frags[i]["x"] - (frags[i - 1]["x"] + frags[i - 1]["w"])
+            if space > BLANK_GAP:
+                gaps.append({"i": i, "x": frags[i]["x"]})
+        rows.append({"frags": frags, "gaps": gaps})
+
+    edges = column_edges(rows)
+    is_column = lambda x: any(abs(x - e) <= COLUMN_TOL for e in edges)
+
+    out: list[dict] = []
+    for r in rows:
+        frags, boxed = r["frags"], {g["i"] for g in r["gaps"]}
+        columns = {g["i"] for g in r["gaps"] if is_column(g["x"])}
+        parts = []
+        just_boxed = False
+        for i, f in enumerate(frags):
+            body = f["text"].strip()
+            if i in boxed:
+                # The letter naming the box is set small and centred inside it,
+                # so the frame shows up as a gap on *both* sides; emitting a box
+                # for the trailing one too would double every blank.
+                if BLANK_CHAR.match(body):
+                    parts.append(f"［{body}］")
+                    just_boxed = True
+                    continue
+                if i in columns:
+                    parts.append(" ")          # a column rule, not a 空欄
+                elif not just_boxed:
+                    parts.append("［　］")
+            just_boxed = False
+            parts.append(body)
+        text = BOX_GLYPH.sub("［　］", fix(clean("".join(parts))))
+        if not text:
+            continue
+        # The row's own frame is kept: stage 15 crops 図表 by the box the lines
+        # around a caption occupy, and nothing else knows where the drawing on
+        # the page actually is.
+        out.append({"x": frags[0]["x"], "y": min(f["y"] for f in frags),
+                    "w": max(f["x"] + f["w"] for f in frags) - frags[0]["x"],
+                    "h": max(f["y"] + f["h"] for f in frags)
+                         - min(f["y"] for f in frags),
+                    "page": page_no, "text": text})
     return out
 
 
@@ -249,6 +291,19 @@ def base_indent(rows: list[dict]) -> float:
 # Two or more empty boxes on one line are the gaps between a table's columns,
 # not blanks to fill in: prose never has that many.
 COLUMNS = re.compile(r"(?:［　］.*){2,}")
+EMPTY_BOX = re.compile(r"［\s*］")
+
+
+def drop_layout_boxes(text: str) -> str:
+    """Empty boxes that are really the spacing of a diagram or a table row.
+
+    A 設問 points at one 空欄 at a time, so a line of the 事例 carrying two or
+    more unlabelled frames is laying out a drawing — "サーバ［ ］サーバ［ ］サーバ"
+    is the row of boxes in a network diagram, not three things to fill in. Left
+    in, they are indistinguishable from the blank the 設問 is asking about.
+    Labelled frames (［c］) are never touched.
+    """
+    return EMPTY_BOX.sub(" ", text) if len(EMPTY_BOX.findall(text)) >= 2 else text
 
 
 def build_body(rows: list[dict]) -> list[dict]:
@@ -306,7 +361,8 @@ def build_body(rows: list[dict]) -> list[dict]:
     # Corrections are applied per row as it is read, but a pattern that straddles
     # a line break ("施" ending one line, "弱" opening the next) only becomes
     # visible once the paragraph is joined.
-    return [dict(b, text=fix(clean(b["text"]))) for b in out if clean(b["text"])]
+    return [dict(b, text=drop_layout_boxes(fix(clean(b["text"]))))
+            for b in out if clean(b["text"])]
 
 
 # A 解答群 is printed as a lettered list, often in two or three columns, and it
