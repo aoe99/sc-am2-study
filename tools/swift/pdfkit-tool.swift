@@ -4,6 +4,7 @@
 //   pdfkit-tool info    <pdf>
 //   pdfkit-tool text    <pdf>
 //   pdfkit-tool crop    <pdf> <page> <x> <y> <w> <h> <out.png> [--dpi N]
+//   pdfkit-tool ink     <pdf> [--dpi N]   rects as JSON on stdin → ink fractions
 //   pdfkit-tool render  <pdf> <outdir> [--dpi N] [--page N] [--prefix P]
 //   pdfkit-tool ocr     <image...>  [--json] [--langcorrect] [--minheight F]
 
@@ -183,10 +184,73 @@ func ocr(paths: [String], asJSON: Bool, langCorrect: Bool, minHeight: Float) {
     }
 }
 
+// MARK: - ink
+//
+// How much of a rectangle is printed on.  A 空欄 in the 午後 booklets is a drawn
+// frame, and the gap between two runs of OCR text is a 空欄 only if something is
+// actually printed there — the same gap appears between a table's columns and
+// between the parts of a diagram, where the paper is blank.  The extraction
+// cannot tell those apart from the text alone, so it asks here.
+//
+// Rects arrive on stdin as [{"page":N,"x":..,"y":..,"w":..,"h":..}] in the
+// normalised top-left coordinates the rest of the tool uses, and the answer is
+// a JSON array of the dark fraction of each, in the same order.
+struct InkRect: Codable { let page: Int; let x: Double; let y: Double; let w: Double; let h: Double }
+
+func inkFractions(doc: PDFDocument, dpi: Double) {
+    let data = FileHandle.standardInput.readDataToEndOfFile()
+    guard let rects = try? JSONDecoder().decode([InkRect].self, from: data) else {
+        die("ink: expected a JSON array of {page,x,y,w,h} on stdin")
+    }
+    let scale = dpi / 72.0
+    var out = [Double](repeating: -1, count: rects.count)
+    // One render per page, however many rectangles fall on it.
+    var byPage: [Int: [Int]] = [:]
+    for (i, r) in rects.enumerated() { byPage[r.page, default: []].append(i) }
+
+    for (pageNo, idxs) in byPage {
+        guard pageNo >= 1, pageNo <= doc.pageCount, let page = doc.page(at: pageNo - 1)
+        else { continue }
+        let box = page.bounds(for: .mediaBox)
+        let w = Int((box.width * scale).rounded()), h = Int((box.height * scale).rounded())
+        guard w > 0, h > 0,
+              let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8,
+                                  bytesPerRow: w, space: CGColorSpaceCreateDeviceGray(),
+                                  bitmapInfo: CGImageAlphaInfo.none.rawValue)
+        else { continue }
+        ctx.setFillColor(gray: 1, alpha: 1)
+        ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+        ctx.saveGState()
+        ctx.scaleBy(x: scale, y: scale)
+        ctx.interpolationQuality = .high
+        page.draw(with: .mediaBox, to: ctx)
+        ctx.restoreGState()
+        guard let buf = ctx.data else { continue }
+        let px = buf.bindMemory(to: UInt8.self, capacity: w * h)
+        let stride = ctx.bytesPerRow
+
+        for i in idxs {
+            let r = rects[i]
+            let x0 = max(0, Int(r.x * Double(w))), x1 = min(w, Int((r.x + r.w) * Double(w)))
+            let y0 = max(0, Int(r.y * Double(h))), y1 = min(h, Int((r.y + r.h) * Double(h)))
+            if x1 - x0 < 2 || y1 - y0 < 2 { out[i] = 0; continue }
+            var dark = 0
+            for y in y0..<y1 {
+                let row = y * stride
+                for x in x0..<x1 where px[row + x] < 160 { dark += 1 }
+            }
+            out[i] = Double(dark) / Double((x1 - x0) * (y1 - y0))
+        }
+    }
+    let enc = JSONEncoder()
+    print(String(data: try! enc.encode(out.map { ($0 * 10000).rounded() / 10000 }),
+                 encoding: .utf8)!)
+}
+
 // MARK: - main
 
 let argv = Array(CommandLine.arguments.dropFirst())
-guard let cmd = argv.first else { die("usage: pdfkit-tool <info|text|render|crop|ocr|icon> ...") }
+guard let cmd = argv.first else { die("usage: pdfkit-tool <info|text|render|crop|ocr|ink|icon> ...") }
 let rest = Array(argv.dropFirst())
 let positional = { () -> [String] in
     var out: [String] = []; var i = 0
@@ -216,6 +280,10 @@ case "text":
     var parts: [String] = []
     for i in 0..<doc.pageCount { parts.append(doc.page(at: i)?.string ?? "") }
     print(parts.joined(separator: "\u{0C}\n"))
+
+case "ink":
+    inkFractions(doc: loadDoc(positional[0]),
+                 dpi: Double(flagValue(rest, "--dpi") ?? "200") ?? 200)
 
 case "icon":
     guard positional.count >= 2 else { die("icon needs <size> <out.png>") }

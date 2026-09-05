@@ -23,8 +23,31 @@ from __future__ import annotations
 import json, re, sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from sclib import (PM_PAPERS, build_dir, clean, pm_papers_of, read_json,
-                   targets_of, write_json)
+from sclib import (PDFTOOL, PM_PAPERS, build_dir, clean, pdf_path, pm_papers_of,
+                   read_json, targets_of, write_json)
+import json as _json, subprocess
+
+# A 空欄 is a drawn frame, so something is printed where it sits. A gap between
+# two columns of a table, or between the parts of a diagram, is bare paper. The
+# text alone cannot tell them apart, so each candidate is measured against the
+# page: below this much ink the gap is white space, not a box. Calibrated on the
+# 758 frames whose letter survived — 0.02 leaves all but a dozen of them (and
+# those look like mis-placed rectangles) while dropping a tenth of the rest.
+INK_MIN = 0.02
+# A gap awaiting that measurement, held in the text until the answer comes back.
+MARK_OPEN, MARK_CLOSE = "\ue000", "\ue001"
+PENDING = re.compile(MARK_OPEN + r"(\d+)" + MARK_CLOSE)
+
+
+def ink_of(pdf, rects: list[dict]) -> list[float]:
+    """Ask the Swift tool how much of each rectangle is printed on."""
+    if not rects:
+        return []
+    r = subprocess.run([str(PDFTOOL), "ink", str(pdf)],
+                       input=_json.dumps(rects), capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"pdfkit-tool ink failed: {r.stderr.strip()}")
+    return _json.loads(r.stdout)
 
 # The same known Vision misreads 午前 corrects: ロ/口, HITP for HTTP, and so on.
 CORR = read_json(Path(__file__).resolve().parent / "corrections.json")
@@ -121,7 +144,7 @@ def column_edges(rows: list[dict]) -> list[float]:
     return edges
 
 
-def rows_of(page: dict, page_no: int) -> list[dict]:
+def rows_of(page: dict, page_no: int, pending: list | None = None) -> list[dict]:
     """OCR fragments regrouped into the lines a reader would see.
 
     Vision emits a run of text per box, so one printed line arrives in pieces
@@ -181,7 +204,21 @@ def rows_of(page: dict, page_no: int) -> list[dict]:
                 if i in columns:
                     parts.append(" ")          # a column rule, not a 空欄
                 elif not just_boxed:
-                    parts.append("［　］")
+                    if pending is None:
+                        parts.append("［　］")
+                    else:
+                        # Held until the page says whether anything is printed
+                        # in the gap.
+                        pending.append({
+                            "page": page_no, "x": frags[i - 1]["x"] + frags[i - 1]["w"],
+                            "y": max(0.0, min(f["y"] for f in frags)
+                                     - (max(f["y"] + f["h"] for f in frags)
+                                        - min(f["y"] for f in frags)) * 0.6),
+                            "w": frags[i]["x"] - (frags[i - 1]["x"] + frags[i - 1]["w"]),
+                            "h": (max(f["y"] + f["h"] for f in frags)
+                                  - min(f["y"] for f in frags)) * 2.2,
+                        })
+                        parts.append(f"{MARK_OPEN}{len(pending) - 1}{MARK_CLOSE}")
             just_boxed = False
             parts.append(body)
         text = BOX_GLYPH.sub("［　］", fix(clean("".join(parts))))
@@ -201,9 +238,10 @@ def rows_of(page: dict, page_no: int) -> list[dict]:
 def load_rows(sid: str, paper: str) -> list[dict]:
     path = build_dir("pm") / "ocr" / f"{sid}-{paper}.json"
     pages = json.loads(path.read_text(encoding="utf-8"))
+    pending: list[dict] = []
     rows: list[dict] = []
     for n, page in enumerate(pages, 1):
-        got = rows_of(page, n)
+        got = rows_of(page, n, pending)
         if (sum(1 for r in got if NOTICE.search(r["text"])) >= 2
                 and not any(is_setsu_head(r) for r in got)):
             continue                       # 注意事項のページ（表紙・裏表紙）
@@ -215,7 +253,15 @@ def load_rows(sid: str, paper: str) -> list[dict]:
             if any(p.match(r["text"]) for p in FURNITURE):
                 continue
             rows.append(r)
-    return rows
+
+    # One question to the page for every gap in the booklet, then each held
+    # marker becomes a box or a space.
+    inked = ink_of(pdf_path(sid, "1問題", "pm", paper), pending)
+    for r in rows:
+        r["text"] = fix(PENDING.sub(
+            lambda m: "［　］" if inked[int(m.group(1))] >= INK_MIN else " ",
+            r["text"]))
+    return [r for r in rows if r["text"].strip()]
 
 
 def split_cases(rows: list[dict], want: int) -> list[tuple[int, str, list[dict]]]:
@@ -420,6 +466,31 @@ def format_group(text: str) -> str:
     return text
 
 
+def widen_cut(rows: list[dict], cut: int) -> int:
+    """Take in the 小問 that sit above the first surviving 設問 heading.
+
+    Nine of the older booklets lost their top margin to the scan, and with it
+    the "設問1" line.  Its (1)(2)… then read as part of the 事例 and their
+    wording was dropped.  They are recognisable by where they start: a 設問's
+    小問 are indented further than the 事例's own lists — 0.135 against 0.086 in
+    平成28年春 — so the indent used by the 小問 *after* the heading says which
+    rows above it belong to the block. Only the same page is considered, since
+    IPA always starts the 設問 on a fresh one.
+    """
+    subs = [r["x"] for r in rows[cut:] if SUB.match(r["text"])]
+    if not subs or cut == 0:
+        return cut
+    indent = min(subs)
+    page = rows[cut]["page"]
+    i = cut
+    while i > 0:
+        r = rows[i - 1]
+        if r["page"] != page or r["x"] < indent - 0.02:
+            break
+        i -= 1
+    return i
+
+
 def build_items(rows: list[dict]) -> list[dict]:
     items: list[dict] = []
     setsu = 0
@@ -438,6 +509,12 @@ def build_items(rows: list[dict]) -> list[dict]:
                           "page": r["page"], "lead": "" if m2 else None})
             continue
         m2 = SUB.match(text)
+        if m2 and not setsu:
+            # The 設問 block opens with (1) because the "設問1" line above it was
+            # cropped off with the top margin — nine of the older booklets were
+            # scanned that way. The 小問 before the first surviving 設問 heading
+            # belong to 設問1; dropping them lost 54 設問文.
+            setsu = 1
         if m2 and setsu:
             # A 設問 that opens with a preamble ("〔…〕について答えよ。") keeps it
             # as the lead-in every one of its 小問 is read under.
@@ -464,6 +541,7 @@ def parse_paper(sid: str, paper: str) -> dict:
     for no, title, body_rows in split_cases(rows, PM_PAPERS[paper]["cases"]):
         cut = next((i for i, r in enumerate(body_rows) if is_setsu_head(r)),
                    len(body_rows))
+        cut = widen_cut(body_rows, cut)
         pages = sorted({r["page"] for r in body_rows})
         cases[str(no)] = {
             "no": no, "paper": paper, "title": title,

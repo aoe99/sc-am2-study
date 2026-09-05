@@ -140,6 +140,45 @@ def pm_fix_range(text: str, parts: list[dict]) -> str:
     return PM_RANGE.sub(f"［{labels[0]}］～［{labels[-1]}］", text, count=1)
 
 
+# A 空欄 frame the scan swallowed whole. "設問1 表1中の a ～ e に入れる" comes back
+# as "表1中の［e］に入れる": the gap from the end of "表1中の" to the letter e is
+# one wide space, and everything printed inside it — the box round a, the tilde —
+# is a drawing. The answer key names every 空欄 the 設問 has, so when the one
+# marker that survived is the first or the last of them, what was printed is
+# recoverable. IPA sets two blanks side by side and three or more as a range.
+PM_ONE_BLANK = re.compile(r"［\s*([^］\s]{1,3})\s*］")
+
+
+def pm_fix_ends(text: str, parts: list[dict]) -> str:
+    labels = [p["label"] for p in parts if p["label"]]
+    if not text or len(labels) < 2:
+        return text
+    found = PM_ONE_BLANK.findall(text)
+    if len(found) != 1 or found[0] not in (labels[0], labels[-1]):
+        return text
+    shown = (f"［{labels[0]}］［{labels[1]}］" if len(labels) == 2
+             else f"［{labels[0]}］～［{labels[-1]}］")
+    return PM_ONE_BLANK.sub(shown, text, count=1)
+
+
+# Vision reads the 下線⑥ marker as a copyright sign often enough to matter. The
+# substitution is only made where it is certain: the 設問 ask about ⑥, the 事例
+# has no ⑥, and exactly one © stands in the prose. Three 事例 qualify; the other
+# two that contain a © have their ⑥ already and the sign is really printed.
+LOOKALIKE = {"⑥": "©"}
+
+
+def pm_repair_markers(body: list[dict], asked: set) -> None:
+    text = "".join(b["text"] for b in body)
+    for mark, stand_in in LOOKALIKE.items():
+        if mark not in asked or mark in text or text.count(stand_in) != 1:
+            continue
+        for b in body:
+            if stand_in in b["text"]:
+                b["text"] = b["text"].replace(stand_in, mark, 1)
+                break
+
+
 def build_pm(targets: list[str]) -> tuple[list, list, list]:
     root = build_dir("pm")
     answers = read_json(root / "answers.json")
@@ -161,6 +200,11 @@ def build_pm(targets: list[str]) -> tuple[list, list, list]:
                 cm = comm.get(sid, {}).get(paper, {}).get(no_s, {})
                 fg = figs.get(sid, {}).get(paper, {}).get(no_s, {})
                 case_id = f"{sid}-{paper}-{no}"
+                asked = set(re.findall(
+                    r"下線\s*([①-⑳])",
+                    " ".join(i.get("text", "") + " " + (i.get("lead") or "")
+                             for i in body["items"])))
+                pm_repair_markers(body["body"], asked)
                 prose = "\n".join(b["text"] for b in body["body"]
                                    if b["kind"] in ("para", "heading"))
                 # 翔泳社 is the only one of the four PDFs that names the 事例;
@@ -223,7 +267,9 @@ def build_pm(targets: list[str]) -> tuple[list, list, list]:
                         "caseId": case_id,
                         "no": no * 100 + n,
                         "setsu": setsu, "sub": sub, "label": item["label"],
-                        "text": pm_fix_range(ask.get("text", ""), item["parts"]),
+                        "text": pm_fix_ends(
+                            pm_fix_range(ask.get("text", ""), item["parts"]),
+                            item["parts"]),
                         "lead": ask.get("lead", ""),
                         "answerKind": item["kind"],
                         "parts": item["parts"],
