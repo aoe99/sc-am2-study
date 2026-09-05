@@ -382,7 +382,13 @@ def build_body(rows: list[dict]) -> list[dict]:
             kind = "heading"
         elif indented or x > base + 0.045:
             kind = "para"
-        elif out and out[-1]["kind"] == "para":
+        elif (out and out[-1]["kind"] == "para"
+              and out[-1]["page"] == r["page"]):
+            # Not across a page break. A paragraph does continue over one, but
+            # merging there throws away the geometry of everything on the new
+            # page, and stage 15 needs it: 図4 of 令7秋 問2 is printed at the top
+            # of a page with its caption below, and its rows had been swallowed
+            # by the paragraph that ended the page before.
             prev = out[-1]
             prev["text"] += text
             # How many printed lines went into this paragraph. Stage 15 uses it

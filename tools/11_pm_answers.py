@@ -52,8 +52,13 @@ BULLET = re.compile(r"^[・･]\s*")
 # of its own and put an input box labelled "に" on the answer form.
 # Spelled out rather than a range: [あ-こ] would also take が and ぐ.
 KANA_LABEL = "あいうえおかきくけこ"
-LABEL = re.compile(rf"^([a-zA-Zａ-ｚＡ-Ｚ{KANA_LABEL}ア-ン][)）]?|[①-⑳])\s+(?=\S)")
-LABEL_ALONE = re.compile(rf"^([a-zA-Zａ-ｚＡ-Ｚ{KANA_LABEL}ア-ン]|[①-⑳])\s*$")
+# Lower case only. IPA labels its blanks a, b, c…, never A or B, and a capital
+# at the head of an answer is the first letter of a name the exam invented —
+# "B コインを攻撃者に移転する" came out as blank B answered "コインを…", and the
+# answer form then asked for a 空欄 B that does not exist. 30 labels were wrong
+# this way (A社, L社, Sサービス, Xサービス…).
+LABEL = re.compile(rf"^([a-zａ-ｚ{KANA_LABEL}ア-ン][)）]?|[①-⑳])\s+(?=\S)")
+LABEL_ALONE = re.compile(rf"^([a-zａ-ｚ{KANA_LABEL}ア-ン]|[①-⑳])\s*$")
 # A second 空欄 opening midway through a line: "d イ e カ".  Only latin and
 # hiragana are split on — katakana in that position is usually the answer.
 INLINE_LABEL = re.compile(rf"\s+([a-zａ-ｚ{KANA_LABEL}])\s+(?=\S)")
