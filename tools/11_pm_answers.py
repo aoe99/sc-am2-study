@@ -137,6 +137,7 @@ class Item:
                 ans = opts[0]
             parts.append({"label": p["label"], "answer": ans,
                           "options": opts, "kind": kind_of(ans)})
+        share_options(parts)
         parts = [p for p in parts if p["answer"] or p["options"]]
         kinds = {p["kind"] for p in parts}
         kind = ("essay" if "essay" in kinds
@@ -148,6 +149,34 @@ class Item:
             "parts": parts, "kind": kind,
             "remarks": self.remarks, "flags": self.flags,
         }
+
+
+def share_options(parts: list[dict]) -> None:
+    """Blanks that are answered from one list between them.
+
+    IPA writes two blanks with the same set of answers as the labels first and
+    the list under the last of them:
+
+        設問3 (2) d
+                  e
+                  ・H 社 Web メール
+                  ・N コラボ            順不同
+
+    Read straight down, d comes out with nothing in it and is dropped, and the
+    設問 ends up with one answer box where the booklet prints two. So a run of
+    slots that opened with nothing takes the list that closes it — but only a
+    list; a plain answer under them belongs to that blank alone.
+    """
+    run: list[dict] = []
+    for p in parts:
+        if not p["answer"] and not p["options"]:
+            run.append(p)
+            continue
+        if run and p["options"]:
+            for q in run:
+                q["answer"], q["options"], q["kind"] = (
+                    p["answer"], list(p["options"]), p["kind"])
+        run = []
 
 
 def tidy(s: str) -> str:

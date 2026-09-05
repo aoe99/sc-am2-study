@@ -128,6 +128,33 @@ def pm_commentary(comm: dict, setsu: int, sub) -> tuple[str, str | None]:
 # The left of the range has to be a real frame. Letters alone are not enough:
 # "XX-XX-XX-23-46-4a" in a 解答群 of MAC addresses is not a range of blanks, and
 # reading it as one rewrote an answer choice.
+# The right-hand rule of a 空欄 frame comes through twice now and then, the
+# second time as a closing bracket: "本文中の［b］，［c］に入れる" reads as
+# "本文中の［b］［c］】に入れる". 84 of these across the corpus; the one real
+# quotation among them — 「［f］」 in an event log — has its opening bracket
+# earlier in the line, which is what tells the two apart.
+PM_DOUBLE_CLOSE = re.compile(r"］\s*([】」〕])")
+OPENER = {"】": "【", "」": "「", "〕": "〔"}
+
+
+# A 空欄 frame is set inline in Japanese, with no space either side of it. The
+# spaces that show up there are the frame's own width, read as one.
+PM_BOX_SPACE = [(re.compile(r"(?<=[^\x00-\x7f])[ 　]+(?=［)"), ""),
+                (re.compile(r"(?<=］)[ 　]+(?=[^\x00-\x7f])"), "")]
+
+
+def pm_close_up(text: str) -> str:
+    for rx, repl in PM_BOX_SPACE:
+        text = rx.sub(repl, text)
+    return text
+
+
+def pm_drop_double_close(text: str) -> str:
+    return PM_DOUBLE_CLOSE.sub(
+        lambda m: m.group(0) if OPENER[m.group(1)] in text[:m.start()] else "］",
+        text)
+
+
 def _norm(s: str) -> str:
     return unicodedata.normalize("NFKC", s).casefold()
 
@@ -151,14 +178,23 @@ def _stray(ch: str, label: str) -> bool:
 
 BOX = r"(?:［[^］]{0,3}］|■)"
 BOXISH = rf"(?:{BOX}|[A-Za-zａ-ｚ]{{1,2}})"
-PM_RANGE = re.compile(rf"(?:{BOX}\s*){{1,3}}[~～ー−\-]\s*(?:{BOXISH}\s*){{1,3}}")
+# All that survives of a frame the scan lost is sometimes its right-hand rule,
+# read as a closing bracket: "表4中の［e］～［g］に入れる" comes back as
+# "表4中の 」～［ ］に入れる". Only a bracket counts on that side — a letter would
+# take in "XX-XX-XX-23-46-4a" in a 解答群 of MAC addresses.
+WRECK = r"[」］】〕]"
+PM_RANGE = re.compile(rf"(?:{BOX}\s*){{1,3}}[~～ー−\-]\s*(?:{BOXISH}\s*){{1,3}}"
+                      rf"|{WRECK}\s*[~～]\s*(?:{BOX}\s*){{1,3}}")
+# The letter of a frame, left outside it and against the range's own dash.
+PM_LEAKED = re.compile(rf"({BOX})\s*[A-Za-z0-9]\s*(?=[~～])")
 
 
 def pm_fix_range(text: str, parts: list[dict]) -> str:
     labels = [p["label"] for p in parts if p["label"]]
     if not text or len(labels) < 2:
         return text
-    return PM_RANGE.sub(f"［{labels[0]}］～［{labels[-1]}］", text, count=1)
+    return PM_RANGE.sub(f"［{labels[0]}］～［{labels[-1]}］",
+                        PM_LEAKED.sub(r"\1", text), count=1)
 
 
 # A 空欄 frame the scan swallowed whole. "設問1 表1中の a ～ e に入れる" comes back
@@ -185,6 +221,22 @@ def pm_fix_ends(text: str, parts: list[dict]) -> str:
 
 # Every 空欄 in a 設問文, whatever the scan made of the letter inside its frame.
 PM_BOX = re.compile(r"［\s*([^］\s]{0,3})\s*］")
+
+
+# A frame whose letter Vision read but set outside it: the gap shows on both
+# sides of the letter, so the frame comes back as two empty ones with the
+# letter loose between them — "本文中の［l］" reads as "本文中の［ ］1［ ］".
+PM_SPLIT_BOX = re.compile(r"［\s*］\s*(\S)\s*［\s*］")
+
+
+def pm_join_split_box(text: str, parts: list[dict]) -> str:
+    labels = [p["label"] for p in parts if p["label"]]
+
+    def one(m: re.Match) -> str:
+        hits = [l for l in labels if _stray(m.group(1), l)]
+        return f"［{hits[0]}］" if len(hits) == 1 else m.group(0)
+
+    return PM_SPLIT_BOX.sub(one, text) if labels else text
 
 
 def pm_fix_labels(text: str, parts: list[dict]) -> str:
@@ -223,6 +275,12 @@ def pm_fix_labels(text: str, parts: list[dict]) -> str:
     elif len(named) == len(labels) and all(
             _same(m.group(1), l) for m, l in zip(named, labels)):
         fill = dict(zip((m.start() for m in named), labels))
+    elif (len(labels) > 2 and len(boxes) == 2 and len(named) == 2
+          and _same(named[0].group(1), labels[0])
+          and _same(named[1].group(1), labels[-1])):
+        # "［c］～［h］" — a range. The two frames are the first and last labels
+        # and the ones between them are not printed at all.
+        fill = {named[0].start(): labels[0], named[1].start(): labels[-1]}
     else:
         return text
     out, last = [], 0
@@ -267,7 +325,8 @@ def pm_fix_body_blanks(body: list[dict], labels: set) -> None:
     by = {_norm(l): l for l in labels}
     for b in body:
         b["text"] = PM_ONE_BLANK.sub(
-            lambda m: f"［{by.get(_norm(m.group(1)), m.group(1))}］", b["text"])
+            lambda m: f"［{by.get(_norm(m.group(1)), m.group(1))}］",
+            pm_close_up(pm_drop_double_close(b["text"])))
 
 
 # A space between two Japanese characters, which sets nothing on its own.
@@ -344,6 +403,13 @@ def pm_reorder_markers(body: list[dict], asked: set) -> None:
         i, at, _ = seen[hits[0]]
         body[i]["text"] = body[i]["text"][:at] + mark + body[i]["text"][at + 1:]
         seq[hits[0]] = want
+
+
+def pm_wording(text: str, parts: list[dict]) -> str:
+    """A 設問文 with its 空欄 put back the way the 解答例 names them."""
+    text = pm_join_split_box(pm_drop_double_close(text), parts)
+    text = pm_fix_ends(pm_fix_range(text, parts), parts)
+    return pm_close_up(pm_fix_labels(pm_put_back_blank(text, parts), parts))
 
 
 def build_pm(targets: list[str]) -> tuple[list, list, list]:
@@ -443,9 +509,7 @@ def build_pm(targets: list[str]) -> tuple[list, list, list]:
                         "caseId": case_id,
                         "no": no * 100 + n,
                         "setsu": setsu, "sub": sub, "label": item["label"],
-                        "text": pm_fix_labels(pm_put_back_blank(pm_fix_ends(
-                            pm_fix_range(ask.get("text", ""), item["parts"]),
-                            item["parts"]), item["parts"]), item["parts"]),
+                        "text": pm_wording(ask.get("text", ""), item["parts"]),
                         "lead": ask.get("lead", ""),
                         "answerKind": item["kind"],
                         "parts": item["parts"],
