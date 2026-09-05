@@ -28,6 +28,23 @@ func flagValue(_ args: [String], _ name: String) -> String? {
     return args[i + 1]
 }
 
+// MARK: - page geometry
+
+/// The page as a reader sees it, with its own /Rotate applied.
+///
+/// `bounds(for:)` reports the box *before* the rotation while `draw(with:to:)`
+/// applies it, so on a quarter-turned page the two disagree: a canvas sized
+/// from the box comes out landscape while the drawing lands in it portrait, and
+/// the top of the page — around a third of it — is clipped away.  Thirteen of
+/// the 午後 booklets carry /Rotate, nine of them a quarter turn, and every one
+/// of those had lost its 問N heading and roughly ten lines a page.
+func displayBox(_ page: PDFPage) -> CGRect {
+    let box = page.bounds(for: .mediaBox)
+    let turn = ((page.rotation % 360) + 360) % 360
+    guard turn == 90 || turn == 270 else { return box }
+    return CGRect(x: box.minX, y: box.minY, width: box.height, height: box.width)
+}
+
 // MARK: - rendering
 
 func renderPages(doc: PDFDocument, outDir: String, dpi: Double, only: Int?, prefix: String) {
@@ -38,7 +55,7 @@ func renderPages(doc: PDFDocument, outDir: String, dpi: Double, only: Int?, pref
     for i in 0..<doc.pageCount {
         if let only = only, only != i + 1 { continue }
         guard let page = doc.page(at: i) else { continue }
-        let box = page.bounds(for: .mediaBox)
+        let box = displayBox(page)
         let w = Int((box.width * scale).rounded()), h = Int((box.height * scale).rounded())
         guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8,
                                   bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
@@ -65,7 +82,7 @@ func renderPages(doc: PDFDocument, outDir: String, dpi: Double, only: Int?, pref
 func cropPage(doc: PDFDocument, pageNo: Int, x: Double, y: Double, w: Double, h: Double,
               out: String, dpi: Double) {
     guard let page = doc.page(at: pageNo - 1) else { die("no page \(pageNo)") }
-    let box = page.bounds(for: .mediaBox)
+    let box = displayBox(page)
     let rect = CGRect(x: box.minX + box.width * x,
                       y: box.minY + box.height * (1 - y - h),
                       width: box.width * w, height: box.height * h)
@@ -211,7 +228,7 @@ func inkFractions(doc: PDFDocument, dpi: Double) {
     for (pageNo, idxs) in byPage {
         guard pageNo >= 1, pageNo <= doc.pageCount, let page = doc.page(at: pageNo - 1)
         else { continue }
-        let box = page.bounds(for: .mediaBox)
+        let box = displayBox(page)
         let w = Int((box.width * scale).rounded()), h = Int((box.height * scale).rounded())
         guard w > 0, h > 0,
               let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8,
@@ -268,7 +285,7 @@ case "info":
     var per: [[String: Int]] = []
     for i in 0..<doc.pageCount {
         let s = doc.page(at: i)?.string ?? ""
-        let b = doc.page(at: i)?.bounds(for: .mediaBox) ?? .zero
+        let b = doc.page(at: i).map(displayBox) ?? .zero
         per.append(["page": i + 1, "chars": s.count, "w": Int(b.width), "h": Int(b.height)])
     }
     let total = per.reduce(0) { $0 + ($1["chars"] ?? 0) }

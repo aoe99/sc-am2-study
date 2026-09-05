@@ -22,12 +22,12 @@ const CIRCLED = /[①-⑳]/g;
 // The empty form is matched too, but only so it can be rendered plainly. A
 // frame that kept its letter is certainly a 空欄 and is called out; an empty one
 // cannot be told from the spacing of a diagram or the rule between two columns
-// — 918 remain in the 事例 against 537 that carry a letter — so highlighting
+// — 990 remain in the 事例 against 585 that carry a letter — so highlighting
 // them all pointed the reader at the wrong thing more often than the right one.
 const ANCHOR = /[①-⑳]|［\s*([^］\s]{1,3})?\s*］/g;
 const UNDERLINE_REF = /下線\s*([①-⑳])/g;
 const FIG_REF = /([図表])\s*([0-9０-９]{1,2})/g;
-const BLANK_REF = /［[^］]{0,3}］/g;
+const BLANK_REF = /［\s*([^］\s]{0,3})?\s*］/g;
 const FW_DIGITS = { '０': '0', '１': '1', '２': '2', '３': '3', '４': '4',
                     '５': '5', '６': '6', '７': '7', '８': '8', '９': '9' };
 const figLabel = (kind, no) =>
@@ -230,10 +230,11 @@ export default async function renderQuizPm({ view, extra, go, ctx }) {
   /** 設問文 with every reference into the 事例 made a way to go and look.
    *
    *  Three kinds: 下線① by its circled number, 図8 / 表2 by name, and ［ ］ by
-   *  the 空欄 it stands for. The blanks are only linked when the answer key's
-   *  labels line up with the markers in the wording — one label for one marker,
-   *  or a single label throughout — because a link to the wrong blank is worse
-   *  than none.
+   *  the 空欄 it stands for. A frame that kept its letter is followed straight
+   *  to it. Where the letter is gone the blanks are only linked when the answer
+   *  key's labels line up with the markers in the wording — one label for one
+   *  marker, or a single label throughout — because a link to the wrong blank
+   *  is worse than none.
    */
   function questionText(text, parts, c) {
     const keys = reachable(c);
@@ -250,7 +251,7 @@ export default async function renderQuizPm({ view, extra, go, ctx }) {
       for (const m of line.matchAll(FIG_REF))
         refs.push({ at: m.index, text: m[0], kind: 'fig', key: figLabel(m[1], m[2]) });
       for (const m of line.matchAll(BLANK_REF))
-        refs.push({ at: m.index, text: m[0], kind: 'blank' });
+        refs.push({ at: m.index, text: m[0], kind: 'blank', letter: m[1] });
       refs.sort((a, b) => a.at - b.at);
 
       const p = el('p');
@@ -258,7 +259,8 @@ export default async function renderQuizPm({ view, extra, go, ctx }) {
       for (const r of refs) {
         if (r.at < last) continue;                 // overlapping match
         if (r.kind === 'blank') {
-          r.key = mapped ? labels[Math.min(seen, labels.length - 1)] : null;
+          const nth = mapped ? labels[Math.min(seen, labels.length - 1)] : null;
+          r.key = r.letter && keys.has(r.letter) ? r.letter : nth;
           seen += 1;
         }
         if (!r.key || !keys.has(r.key)) continue;

@@ -78,7 +78,19 @@ SETSU_RANGE = re.compile(r"^設問\s*[0-9０-９]{1,2}\s*[〜~～ー−-]")
 def is_setsu_head(row: dict) -> bool:
     t = row["text"]
     return bool(SETSU.match(t)) and not SETSU_RANGE.match(t) and row["x"] < 0.17
-SUB = re.compile(r"^[（(]\s*([0-9０-９]{1,2})\s*[）)]\s*")
+# The 小問 number, as the scan hands it over. The closing paren is sometimes
+# lost, "1" comes back as "I", and a circled ① stands in for (1) or for the
+# whole "(4)" — 5 設問文 across the corpus were dropped for one of those. A
+# number with neither its closing paren nor a space after it is prose.
+SUB_N = r"(?:[0-9０-９]{1,2}|[IlＩｌ]|[①-⑳])"
+SUB = re.compile(rf"^(?:[（(]\s*({SUB_N})\s*(?:[）)]|(?=\s))|([①-⑳])\s*[）)])\s*")
+CIRCLED = {chr(0x2460 + i): i + 1 for i in range(20)}
+
+
+def sub_no(m: re.Match) -> int:
+    """The 小問 number a SUB match found, however it was printed."""
+    s = m.group(1) or m.group(2)
+    return CIRCLED.get(s) or (1 if s in "IlＩｌ" else digits(s))
 SECTION = re.compile(r"^[〔［\[【]")
 CAPTION = re.compile(r"^([図表])\s*([0-9０-９]{1,2})\s*[^0-9０-９]")
 BLANK_CHAR = re.compile(r"^[a-zA-Zあ-んア-ンα-ωΑ-Ω①-⑳]$")
@@ -264,7 +276,31 @@ def load_rows(sid: str, paper: str) -> list[dict]:
     return [r for r in rows if r["text"].strip()]
 
 
+def join_wrapped_heads(rows: list[dict]) -> list[dict]:
+    """Put a 大問 heading that ran onto a second line back together.
+
+    "問1 Webアプリケーションプログラム開発のセキュリティ対策に関する次の記述を読ん"
+    breaks mid-word before "で、設問1～3に答えよ。", and the heading is what names
+    the 大問 and says where its 事例 begins.  Two rows are only ever joined when
+    the join is itself a heading, so nothing else in the booklet is touched.
+    """
+    out: list[dict] = []
+    skip = False
+    for i, r in enumerate(rows):
+        if skip:
+            skip = False
+            continue
+        nxt = rows[i + 1] if i + 1 < len(rows) else None
+        if (nxt and not CASE_HEAD.match(r["text"])
+                and CASE_HEAD.match(r["text"] + nxt["text"])):
+            r = dict(r, text=r["text"] + nxt["text"])
+            skip = True
+        out.append(r)
+    return out
+
+
 def split_cases(rows: list[dict], want: int) -> list[tuple[int, str, list[dict]]]:
+    rows = join_wrapped_heads(rows)
     starts = [(i, CASE_HEAD.match(r["text"]))
               for i, r in enumerate(rows) if CASE_HEAD.match(r["text"])]
     if len(starts) == want:
@@ -273,51 +309,10 @@ def split_cases(rows: list[dict], want: int) -> list[tuple[int, str, list[dict]]
             end = starts[k + 1][0] if k + 1 < len(starts) else len(rows)
             cases.append((digits(m.group(1)), clean(m.group(2)), rows[i + 1:end]))
         return cases
-    return split_by_setsu(rows, want)
-
-
-# Two 設問 of one 大問 are never more than a page or two apart; the gap to the
-# next 大問's block is the rest of a case study.
-SETSU_GAP = 2
-
-
-def split_by_setsu(rows: list[dict], want: int) -> list[tuple[int, str, list[dict]]]:
-    """Split on the 設問 blocks when the 問N headings are not in the scan.
-
-    Nine of the older booklets were scanned with the top margin cropped off,
-    which took the "問1 …に関する次の記述を読んで" line with it — it is not in the
-    PDF at all, so nothing can read it back.  Some of those scans lost the first
-    line of a 設問 block the same way, so the split cannot key on 設問1 either.
-
-    What survives is that every 大問 closes with a run of 設問 lines and IPA
-    always starts the next one on a fresh page.  So the runs are found by the
-    page gap between 設問 lines, the 事例 is what precedes its own run, and the
-    title comes from the 教科書解説, which names every 大問 anyway.
-    """
-    marks = [i for i, r in enumerate(rows) if is_setsu_head(r)]
-    if not marks:
-        return []
-    runs = [[marks[0]]]
-    for i in marks[1:]:
-        if rows[i]["page"] - rows[runs[-1][-1]]["page"] > SETSU_GAP:
-            runs.append([i])
-        else:
-            runs[-1].append(i)
-    if len(runs) != want:
-        return []
-
-    cases, body_from = [], 0
-    for k, run in enumerate(runs):
-        last_page = rows[run[-1]]["page"]
-        nxt = runs[k + 1][0] if k + 1 < len(runs) else len(rows)
-        end = nxt
-        for j in range(run[0], nxt):
-            if rows[j]["page"] > last_page:
-                end = j
-                break
-        cases.append((k + 1, "", rows[body_from:end]))
-        body_from = end
-    return cases
+    # Every booklet's 問N headings are in the scan; a count that does not match
+    # is a parse that has gone wrong, and main() says so rather than guessing
+    # the boundaries from somewhere else.
+    return []
 
 
 def base_indent(rows: list[dict]) -> float:
@@ -472,55 +467,36 @@ def format_group(text: str) -> str:
     return text
 
 
-def widen_cut(rows: list[dict], cut: int) -> int:
-    """Take in the 小問 that sit above the first surviving 設問 heading.
-
-    Nine of the older booklets lost their top margin to the scan, and with it
-    the "設問1" line.  Its (1)(2)… then read as part of the 事例 and their
-    wording was dropped.  They are recognisable by where they start: a 設問's
-    小問 are indented further than the 事例's own lists — 0.135 against 0.086 in
-    平成28年春 — so the indent used by the 小問 *after* the heading says which
-    rows above it belong to the block. Only the same page is considered, since
-    IPA always starts the 設問 on a fresh one.
-    """
-    subs = [r["x"] for r in rows[cut:] if SUB.match(r["text"])]
-    if not subs or cut == 0:
-        return cut
-    indent = min(subs)
-    page = rows[cut]["page"]
-    i = cut
-    while i > 0:
-        r = rows[i - 1]
-        if r["page"] != page or r["x"] < indent - 0.02:
-            break
-        i -= 1
-    return i
-
-
 def build_items(rows: list[dict]) -> list[dict]:
     items: list[dict] = []
-    setsu = 0
+    setsu, nth = 0, 1
     for r in rows:
         text = r["text"]
         if SETSU_RANGE.match(text):
             continue
         m = SETSU.match(text)
         if m:
-            setsu = digits(m.group(1))
+            setsu, nth = digits(m.group(1)), 1
             rest = text[m.end():].strip()
             m2 = SUB.match(rest)
+            if m2:
+                nth = sub_no(m2) + 1
             items.append({"setsu": setsu,
-                          "sub": digits(m2.group(1)) if m2 else None,
+                          "sub": sub_no(m2) if m2 else None,
                           "text": rest[m2.end():].strip() if m2 else rest,
                           "page": r["page"], "lead": "" if m2 else None})
             continue
         m2 = SUB.match(text)
-        if m2 and not setsu:
-            # The 設問 block opens with (1) because the "設問1" line above it was
-            # cropped off with the top margin — nine of the older booklets were
-            # scanned that way. The 小問 before the first surviving 設問 heading
-            # belong to 設問1; dropping them lost 54 設問文.
-            setsu = 1
+        # 小問 are numbered from (1) and run on without a gap, so a number that
+        # goes backwards — or jumps — is not a heading but the line's own text.
+        # 図9 of 令4春 問2 draws its message flow as "(1) スケジュール取得要求" and
+        # the 小問 under it wraps onto "(10)から選び、番号で答えよ。"; both read as
+        # headings until this was checked, and between them they cost the 大問
+        # three 設問文. It also settles a 設問 heading that wraps: "設問2〔…〕に
+        # ついて、(1)，" carries on as "(2)に答えよ。", and that (2) is the end of
+        # the heading, not the second 小問 under it.
+        if m2 and sub_no(m2) != nth:
+            m2 = None
         if m2 and setsu:
             # A 設問 that opens with a preamble ("〔…〕について答えよ。") keeps it
             # as the lead-in every one of its 小問 is read under.
@@ -529,9 +505,10 @@ def build_items(rows: list[dict]) -> list[dict]:
                 lead = items.pop()["text"]
             elif items and items[-1]["setsu"] == setsu:
                 lead = items[-1].get("lead") or ""
-            items.append({"setsu": setsu, "sub": digits(m2.group(1)),
+            items.append({"setsu": setsu, "sub": sub_no(m2),
                           "text": text[m2.end():].strip(), "page": r["page"],
                           "lead": lead})
+            nth = sub_no(m2) + 1
             continue
         if items:
             items[-1]["text"] += text
@@ -547,7 +524,6 @@ def parse_paper(sid: str, paper: str) -> dict:
     for no, title, body_rows in split_cases(rows, PM_PAPERS[paper]["cases"]):
         cut = next((i for i, r in enumerate(body_rows) if is_setsu_head(r)),
                    len(body_rows))
-        cut = widen_cut(body_rows, cut)
         pages = sorted({r["page"] for r in body_rows})
         cases[str(no)] = {
             "no": no, "paper": paper, "title": title,

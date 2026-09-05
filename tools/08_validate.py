@@ -92,8 +92,8 @@ def main() -> int:
         # way 午前's short questions are. Both numbers should be watched: a jump
         # means something in the pipeline broke, not that IPA changed.
         check(f"設問文が取れている（{len(pm_qs) - len(no_ask)}/{len(pm_qs)}）", True,
-              "残りは H28春・H28秋・H30秋・R01秋 など、上余白ごと見出しが切れた"
-              "スキャンにあり、PDFに存在しない。解答例・講評・解説は揃っている")
+              "残りは R05秋 問4。三つの記入例を並べる解答例の表が、テキスト層では"
+              "列の順に読めず、設問2の小問と対応が付かない。解答例・講評・解説は揃っている")
         check(f"全設問に解説がある（{len(pm_qs) - len(no_exp2)}/{len(pm_qs)}）", True,
               "残りは教科書解説側に その設問の見出しが立っていない回"
               f"（{len(no_exp2)}件）。解答例と採点講評で代替する")

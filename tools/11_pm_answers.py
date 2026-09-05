@@ -52,16 +52,21 @@ BULLET = re.compile(r"^[・･]\s*")
 # of its own and put an input box labelled "に" on the answer form.
 # Spelled out rather than a range: [あ-こ] would also take が and ぐ.
 KANA_LABEL = "あいうえおかきくけこ"
+# IPA also labels blanks α, β, γ when a 大問 has already used up a..z. Greek is
+# unambiguous here — no name in these booklets starts with one — so unlike the
+# latin labels below it needs no case rule.
+GREEK_LABEL = "αβγδεζη"
 # Lower case only. IPA labels its blanks a, b, c…, never A or B, and a capital
 # at the head of an answer is the first letter of a name the exam invented —
 # "B コインを攻撃者に移転する" came out as blank B answered "コインを…", and the
 # answer form then asked for a 空欄 B that does not exist. 30 labels were wrong
 # this way (A社, L社, Sサービス, Xサービス…).
-LABEL = re.compile(rf"^([a-zａ-ｚ{KANA_LABEL}ア-ン][)）]?|[①-⑳])\s+(?=\S)")
-LABEL_ALONE = re.compile(rf"^([a-zａ-ｚ{KANA_LABEL}ア-ン]|[①-⑳])\s*$")
+ONE_LABEL = rf"[a-zａ-ｚ{KANA_LABEL}{GREEK_LABEL}ア-ン]"
+LABEL = re.compile(rf"^({ONE_LABEL}[)）]?|[①-⑳])\s+(?=\S)")
+LABEL_ALONE = re.compile(rf"^({ONE_LABEL}|[①-⑳])\s*$")
 # A second 空欄 opening midway through a line: "d イ e カ".  Only latin and
 # hiragana are split on — katakana in that position is usually the answer.
-INLINE_LABEL = re.compile(rf"\s+([a-zａ-ｚ{KANA_LABEL}])\s+(?=\S)")
+INLINE_LABEL = re.compile(rf"\s+([a-zａ-ｚ{KANA_LABEL}{GREEK_LABEL}])\s+(?=\S)")
 # The 備考 column carries these; PDFKit flattens them onto a line of their own.
 REMARK = re.compile(r"^(順不同|全て順不同|各順不同|別解|.{0,12}も可|.{0,20}でも可)\s*$")
 
@@ -168,18 +173,26 @@ def parse_table(lines: list[str]) -> list[dict]:
         cur = Item(setsu, sub)
         items.append(cur)
 
+    nth = 1
     for raw in lines:
         line = raw
         opened = False
         m = SETSU.match(line)
         if m:
-            setsu = digits(m.group(1))
+            setsu, nth = digits(m.group(1)), 1
             line = line[m.end():].strip()
             open_item(None)
             opened = True
         m = SUB.match(line)
-        if m:
+        # 小問 are numbered from (1) and run on without a gap. 設問4 of 令3春 問3
+        # answers "(2)の活動に必要な情報" and "(4)の活動に必要な情報" under its own
+        # (1), and the second of those read as a fourth 小問 — an item with an
+        # answer, no wording, and no counterpart in the booklet. One number may
+        # be skipped: 設問2 of 令5秋 問4 hides its (1) behind the ① of the first
+        # of three worked examples, so its (2) is the first one seen.
+        if m and nth <= digits(m.group(1)) <= nth + 1:
             sub = digits(m.group(1))
+            nth = sub + 1
             if opened:
                 cur.sub = sub
             else:

@@ -11,12 +11,12 @@ they are — a 設問 is the thing you answer and the thing you come back to, no
 ten pages of scenario above it.
 """
 from __future__ import annotations
-import datetime as dt, json, re, sys
+import datetime as dt, json, re, sys, unicodedata
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sclib import (SESSIONS, SESSION_IDS, SECTIONS, CHOICE_KEYS, PM_PAPERS, ROOT,
-                   DATA, BUILD, build_dir, exam_name, pdf_path, pm_papers_of,
-                   read_json, write_json)
+                   DATA, BUILD, build_dir, clean, exam_name, pdf_path,
+                   pm_papers_of, read_json, write_json)
 
 SCHEMA_VERSION = 1
 TAGS = read_json(Path(__file__).resolve().parent / "tags.json")
@@ -128,6 +128,27 @@ def pm_commentary(comm: dict, setsu: int, sub) -> tuple[str, str | None]:
 # The left of the range has to be a real frame. Letters alone are not enough:
 # "XX-XX-XX-23-46-4a" in a 解答群 of MAC addresses is not a range of blanks, and
 # reading it as one rewrote an answer choice.
+def _norm(s: str) -> str:
+    return unicodedata.normalize("NFKC", s).casefold()
+
+
+def _same(a: str, b: str) -> bool:
+    return _norm(a) == _norm(b)
+
+
+def _wordish(ch: str) -> bool:
+    """Part of a Latin word — so `isalnum`, which says yes to every kana."""
+    return bool(ch) and ch.isascii() and ch.isalnum()
+
+
+# The digit Vision returns for a letter set small inside a 空欄 frame.
+STRAY_DIGIT = {"g": "9", "i": "1", "l": "1", "o": "0", "b": "6"}
+
+
+def _stray(ch: str, label: str) -> bool:
+    return bool(ch) and (_same(ch, label) or STRAY_DIGIT.get(_norm(label)) == ch)
+
+
 BOX = r"(?:［[^］]{0,3}］|■)"
 BOXISH = rf"(?:{BOX}|[A-Za-zａ-ｚ]{{1,2}})"
 PM_RANGE = re.compile(rf"(?:{BOX}\s*){{1,3}}[~～ー−\-]\s*(?:{BOXISH}\s*){{1,3}}")
@@ -154,11 +175,70 @@ def pm_fix_ends(text: str, parts: list[dict]) -> str:
     if not text or len(labels) < 2:
         return text
     found = PM_ONE_BLANK.findall(text)
-    if len(found) != 1 or found[0] not in (labels[0], labels[-1]):
+    ends = (labels[0], labels[-1])
+    if len(found) != 1 or not any(_same(found[0], l) for l in ends):
         return text
     shown = (f"［{labels[0]}］［{labels[1]}］" if len(labels) == 2
              else f"［{labels[0]}］～［{labels[-1]}］")
     return PM_ONE_BLANK.sub(shown, text, count=1)
+
+
+# Every 空欄 in a 設問文, whatever the scan made of the letter inside its frame.
+PM_BOX = re.compile(r"［\s*([^］\s]{0,3})\s*］")
+
+
+def pm_fix_labels(text: str, parts: list[dict]) -> str:
+    """Name each 空欄 of a 設問文 the way the 解答例 names it.
+
+    The letter inside a frame is set small, and Vision returns a lower-case c in
+    a box as C about a fifth of the time: the 設問 then reads "図2中の［C］［d］に
+    入れる" while the boxes to write in are labelled c and d. The 解答例 is the
+    authority on which blanks a 設問 has and what they are called, so where the
+    frames line up with its labels they are given the labels' own form.
+
+    Two shapes are safe to act on, and only these. When there are as many frames
+    as labels and every frame that kept a letter agrees with the label in its
+    place, each frame takes that label — which also fills in the frames whose
+    letter the scan lost. When instead the frames that kept a letter already
+    account for every label, a frame left over is one the gap-finder invented:
+    there is nothing to put in it, so it goes.
+    """
+    labels = [p["label"] for p in parts if p["label"]]
+    if not text or not labels:
+        return text
+    boxes = list(PM_BOX.finditer(text))
+    named = [m for m in boxes if m.group(1)]
+    if len(boxes) == len(labels):
+        if not all(_same(m.group(1), l)
+                   for m, l in zip(boxes, labels) if m.group(1)):
+            return text
+        fill = dict(zip((m.start() for m in boxes), labels))
+    elif len(named) == len(labels) and all(
+            _same(m.group(1), l) for m, l in zip(named, labels)):
+        fill = dict(zip((m.start() for m in named), labels))
+    else:
+        return text
+    out, last = [], 0
+    for m in boxes:
+        head, label, skip = text[last:m.start()], fill.get(m.start()), 0
+        # The letter belongs inside the frame, and where Vision read it as a
+        # neighbour instead the 設問 comes out as "図1中の［ ］eに入れる". Once the
+        # frame carries its label, that loose copy is a leftover. Only a letter
+        # standing on its own counts — never one cut out of a word.
+        if label:
+            left = head.rstrip(" ")
+            if _stray(left[-1:], label) and not _wordish(left[-2:-1]):
+                head = left[:-1].rstrip(" ")
+            tail = text[m.end():]
+            at = len(tail) - len(tail.lstrip(" "))
+            if _stray(tail[at:at + 1], label) and not _wordish(tail[at + 1:at + 2]):
+                after = tail[at + 1:]
+                skip = at + 1 + len(after) - len(after.lstrip(" "))
+        out.append(head)
+        out.append(f"［{label}］" if label else "")
+        last = m.end() + skip
+    out.append(text[last:])
+    return clean("".join(out))
 
 
 # Vision reads the 下線⑥ marker as a copyright sign often enough to matter. The
@@ -166,6 +246,52 @@ def pm_fix_ends(text: str, parts: list[dict]) -> str:
 # has no ⑥, and exactly one © stands in the prose. Three 事例 qualify; the other
 # two that contain a © have their ⑥ already and the sign is really printed.
 LOOKALIKE = {"⑥": "©"}
+
+
+def pm_fix_body_blanks(body: list[dict], labels: set) -> None:
+    """Give the 空欄 of the 事例 the letters the 設問 call them by.
+
+    Same misreading as in the 設問文, on the other side of the link: a lower-case
+    c set small inside its frame comes back as C, 58 times across the corpus.
+    IPA never mixes the cases, so a frame whose letter differs from one of this
+    大問's labels only in case is that label — and until it says so, the 設問
+    that reads "［c］に入れる" has no ［c］ in the 事例 to send the reader to.
+    """
+    by = {_norm(l): l for l in labels}
+    for b in body:
+        b["text"] = PM_ONE_BLANK.sub(
+            lambda m: f"［{by.get(_norm(m.group(1)), m.group(1))}］", b["text"])
+
+
+# A space between two Japanese characters, which sets nothing on its own.
+PM_GAP = re.compile(r"(?<=\S)[ 　](?=\S)")
+
+
+def pm_put_back_blank(text: str, parts: list[dict]) -> str:
+    """Put back the one 空欄 frame a 設問文 lost outright.
+
+    "本文中の［f］に入れる適切な字句を" comes back as "本文中の に入れる…" when the
+    frame is faint enough that the ink test calls the gap blank paper: all that
+    survives is the space it stood in. Where the 解答例 says the 設問 has exactly
+    one blank, the wording shows none, and exactly one space in it separates two
+    Japanese characters — Latin keeps its own spaces, so those are skipped —
+    there is nowhere else the frame can have been. 50 設問 read this way.
+    """
+    labels = [p["label"] for p in parts if p["label"]]
+    if len(labels) != 1 or not text:
+        return text
+    head, sep, rest = text.partition("\n")
+    if PM_BOX.search(head):
+        return text
+    gaps = [m for m in PM_GAP.finditer(head)
+            if not head[m.start() - 1].isascii() and not head[m.end()].isascii()]
+    if len(gaps) != 1:
+        return text
+    at = gaps[0]
+    return head[:at.start()] + f"［{labels[0]}］" + head[at.end():] + sep + rest
+
+
+PM_MARK = re.compile(r"[①-⑳]")
 
 
 def pm_repair_markers(body: list[dict], asked: set) -> None:
@@ -177,6 +303,40 @@ def pm_repair_markers(body: list[dict], asked: set) -> None:
             if stand_in in b["text"]:
                 b["text"] = b["text"].replace(stand_in, mark, 1)
                 break
+    pm_reorder_markers(body, asked)
+
+
+def pm_reorder_markers(body: list[dict], asked: set) -> None:
+    """Put back a 下線 marker the scan read as a different circled number.
+
+    The markers of a 事例 are printed ①②③… down the page in order, and the 設問
+    name every one of them.  So a marker the 設問 ask about that is nowhere in
+    the 事例 can be placed whenever exactly one of the numbers that *are* there
+    sits where it belongs — after the marker below it, before the marker above
+    it — and is out of order where it stands.  下線⑦ of 令5秋 問3 came back as a
+    second ②, three lines under ⑥ and two above ⑧; nothing else in the 事例
+    could have been it, and without the marker the 設問 asking about it had
+    nowhere in the 事例 to point.
+    """
+    seen = [(i, m.start(), ord(m.group()) - 0x245F)
+            for i, b in enumerate(body) for m in PM_MARK.finditer(b["text"])]
+    if not seen:
+        return
+    seq = [v for _, _, v in seen]
+    for mark in sorted(asked):
+        want = ord(mark) - 0x245F
+        if want in seq:
+            continue
+        hits = [k for k in range(len(seq))
+                if (k == 0 or seq[k - 1] < want)
+                and (k == len(seq) - 1 or seq[k + 1] > want)
+                and ((k and seq[k] <= seq[k - 1])
+                     or (k + 1 < len(seq) and seq[k] >= seq[k + 1]))]
+        if len(hits) != 1:
+            continue
+        i, at, _ = seen[hits[0]]
+        body[i]["text"] = body[i]["text"][:at] + mark + body[i]["text"][at + 1:]
+        seq[hits[0]] = want
 
 
 def build_pm(targets: list[str]) -> tuple[list, list, list]:
@@ -205,6 +365,9 @@ def build_pm(targets: list[str]) -> tuple[list, list, list]:
                     " ".join(i.get("text", "") + " " + (i.get("lead") or "")
                              for i in body["items"])))
                 pm_repair_markers(body["body"], asked)
+                pm_fix_body_blanks(body["body"],
+                                   {p["label"] for i in key.get("items", [])
+                                    for p in i["parts"] if p["label"]})
                 prose = "\n".join(b["text"] for b in body["body"]
                                    if b["kind"] in ("para", "heading"))
                 # 翔泳社 is the only one of the four PDFs that names the 事例;
@@ -267,9 +430,9 @@ def build_pm(targets: list[str]) -> tuple[list, list, list]:
                         "caseId": case_id,
                         "no": no * 100 + n,
                         "setsu": setsu, "sub": sub, "label": item["label"],
-                        "text": pm_fix_ends(
+                        "text": pm_fix_labels(pm_put_back_blank(pm_fix_ends(
                             pm_fix_range(ask.get("text", ""), item["parts"]),
-                            item["parts"]),
+                            item["parts"]), item["parts"]), item["parts"]),
                         "lead": ask.get("lead", ""),
                         "answerKind": item["kind"],
                         "parts": item["parts"],
