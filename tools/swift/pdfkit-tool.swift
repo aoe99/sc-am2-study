@@ -210,9 +210,13 @@ func ocr(paths: [String], asJSON: Bool, langCorrect: Bool, minHeight: Float) {
 // much higher resolution, it has a chance.
 //
 // Same input as `ink`: [{"page":N,"x":..,"y":..,"w":..,"h":..}] in normalised
-// top-left coordinates.  The answer is one object per rectangle, in order, with
-// the best reading and up to three candidates for it.
-struct RectText: Codable { let text: String; let conf: Float; let alts: [String] }
+// top-left coordinates.  The answer is one object per rectangle, in order,
+// holding what was found in it left to right: a gap is not always one frame —
+// "［f］は［g］" is a single run of lost text between two OCR fragments — so each
+// run of glyphs is reported separately, with up to three readings and where in
+// the rectangle it sits.
+struct RectSpan: Codable { let x: Double; let w: Double; let alts: [String] }
+struct RectText: Codable { let spans: [RectSpan] }
 
 func rectOCR(doc: PDFDocument, dpi: Double) {
     let data = FileHandle.standardInput.readDataToEndOfFile()
@@ -220,8 +224,7 @@ func rectOCR(doc: PDFDocument, dpi: Double) {
         die("rectocr: expected a JSON array of {page,x,y,w,h} on stdin")
     }
     let scale = dpi / 72.0
-    var out = [RectText](repeating: RectText(text: "", conf: 0, alts: []),
-                         count: rects.count)
+    var out = [RectText](repeating: RectText(spans: []), count: rects.count)
     var byPage: [Int: [Int]] = [:]
     for (i, r) in rects.enumerated() { byPage[r.page, default: []].append(i) }
 
@@ -259,17 +262,15 @@ func rectOCR(doc: PDFDocument, dpi: Double) {
             if #available(macOS 13.0, *) { req.revision = VNRecognizeTextRequestRevision3 }
             let handler = VNImageRequestHandler(cgImage: crop, options: [:])
             guard (try? handler.perform([req])) != nil else { continue }
-            var best: VNRecognizedText? = nil
-            var alts: [String] = []
+            var spans: [RectSpan] = []
             for o in req.results ?? [] {
                 let cands = o.topCandidates(3)
-                guard let top = cands.first else { continue }
-                if best == nil || top.confidence > best!.confidence { best = top }
-                alts += cands.map { $0.string }
+                guard !cands.isEmpty else { continue }
+                let bb = o.boundingBox         // normalised within the crop
+                spans.append(RectSpan(x: Double(bb.minX), w: Double(bb.width),
+                                      alts: cands.map { $0.string }))
             }
-            if let b = best {
-                out[i] = RectText(text: b.string, conf: b.confidence, alts: alts)
-            }
+            out[i] = RectText(spans: spans.sorted { $0.x < $1.x })
         }
     }
     let enc = JSONEncoder()

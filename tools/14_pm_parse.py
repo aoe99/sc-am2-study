@@ -76,22 +76,43 @@ FRAME_DPI = 600
 FRAME_CROPS = [0.5, 0.8]
 
 
-def frame_text(pdf, rects: list[dict]) -> list[list[str]]:
-    """Vision's readings of each frame: single characters, best first."""
-    out: list[list[str]] = [[] for _ in rects]
+def frame_text(pdf, rects: list[dict]) -> list[list[list[str]]]:
+    """What was read in each gap: one list of single-character readings per run
+    of glyphs found in it, left to right.
+
+    A gap is not always one frame. "［f］は［g］" is a single run of text that the
+    page OCR lost whole, so it comes back as three runs in one rectangle and has
+    to stay three. Runs at the same place in the two crops are the same glyph,
+    and their readings are pooled.
+    """
+    passes = []
     for up in FRAME_CROPS:
         if not rects:
-            break
+            return [[] for _ in rects]
         r = subprocess.run([str(PDFTOOL), "rectocr", str(pdf), "--dpi", str(FRAME_DPI)],
                            input=_json.dumps([grown(x, up, 1 + 2 * up) for x in rects]),
                            capture_output=True, text=True)
         if r.returncode != 0:
             raise RuntimeError(f"pdfkit-tool rectocr failed: {r.stderr.strip()}")
-        for seen, got in zip(out, _json.loads(r.stdout)):
-            for c in [got["text"]] + got["alts"]:
-                c = c.strip()
-                if len(c) == 1 and norm_label(c) not in seen:
-                    seen.append(norm_label(c))
+        passes.append(_json.loads(r.stdout))
+
+    out: list[list[list[str]]] = []
+    for i in range(len(rects)):
+        runs: list[dict] = []
+        for got in passes:
+            for sp in got[i]["spans"]:
+                seen = [norm_label(c.strip()) for c in sp["alts"]
+                        if len(c.strip()) == 1]
+                if not seen:
+                    continue
+                mid = sp["x"] + sp["w"] / 2
+                same = next((g for g in runs
+                             if g["x"] <= mid <= g["x"] + g["w"]), None)
+                if same is None:
+                    runs.append({"x": sp["x"], "w": sp["w"], "alts": seen})
+                else:
+                    same["alts"] += [c for c in seen if c not in same["alts"]]
+        out.append([g["alts"] for g in sorted(runs, key=lambda g: g["x"])])
     return out
 
 
@@ -343,8 +364,12 @@ def resolve_frames(rows: list[dict], read: dict, labels: set) -> None:
     by = {norm_label(l): l for l in labels}
 
     def one(m: re.Match) -> str:
-        hits = [by[c] for c in read.get(int(m.group(1)), []) if c in by]
-        return f"［{hits[0]}］" if len(hits) == 1 else "［　］"
+        boxes = []
+        for alts in read.get(int(m.group(1)), []):
+            hits = [by[c] for c in alts if c in by]
+            if len(hits) == 1:
+                boxes.append(f"［{hits[0]}］")
+        return "".join(boxes) if boxes else "［　］"
 
     for r in rows:
         r["text"] = PENDING.sub(one, r["text"])
