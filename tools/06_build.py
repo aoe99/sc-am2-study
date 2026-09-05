@@ -208,7 +208,14 @@ def pm_fix_labels(text: str, parts: list[dict]) -> str:
         return text
     boxes = list(PM_BOX.finditer(text))
     named = [m for m in boxes if m.group(1)]
-    if len(boxes) == len(labels):
+    wording = [m for m in boxes if m.start() < len(text.partition("\n")[0])]
+    if len(labels) == 1 and len(wording) == 1:
+        # One blank, one frame in the wording: that frame is that blank whatever
+        # the scan made of the letter inside it, and the 解答例 outranks the scan.
+        # 204 of these agree already; the 3 that do not read ［α］ for d, ［a］ for
+        # α and ［d］ for p — misreadings, not blanks the 解答例 forgot.
+        fill = {wording[0].start(): labels[0]}
+    elif len(boxes) == len(labels):
         if not all(_same(m.group(1), l)
                    for m, l in zip(boxes, labels) if m.group(1)):
             return text
@@ -365,9 +372,9 @@ def build_pm(targets: list[str]) -> tuple[list, list, list]:
                     " ".join(i.get("text", "") + " " + (i.get("lead") or "")
                              for i in body["items"])))
                 pm_repair_markers(body["body"], asked)
-                pm_fix_body_blanks(body["body"],
-                                   {p["label"] for i in key.get("items", [])
-                                    for p in i["parts"] if p["label"]})
+                blanks = {p["label"] for i in key.get("items", [])
+                          for p in i["parts"] if p["label"]}
+                pm_fix_body_blanks(body["body"], blanks)
                 prose = "\n".join(b["text"] for b in body["body"]
                                    if b["kind"] in ("para", "heading"))
                 # 翔泳社 is the only one of the four PDFs that names the 事例;
@@ -390,6 +397,12 @@ def build_pm(targets: list[str]) -> tuple[list, list, list]:
                     "overviewRate": cm.get("overallRate"),
                     "body": [{"kind": b["kind"], "text": b["text"], "page": b["page"]}
                              for b in body["body"]],
+                    # What ［…］ in this 事例 is a 空欄 rather than something the
+                    # booklet really prints in brackets: "argv［1］" in a listing,
+                    # "［チョコ］" as a search term, a particle the scan cut out of
+                    # a line. 133 of the 755 framed letters in the 事例 are one of
+                    # those, and calling them all 空欄 sends the reader hunting.
+                    "blanks": sorted(blanks),
                     "figures": fg.get("figures", []),
                     "pages": body.get("pages", []),
                     "tags": tags_for(prose[:6000]),

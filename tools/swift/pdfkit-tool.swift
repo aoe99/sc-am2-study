@@ -201,6 +201,82 @@ func ocr(paths: [String], asJSON: Bool, langCorrect: Bool, minHeight: Float) {
     }
 }
 
+// MARK: - rectocr
+//
+// OCR one small rectangle at a time.  The letter naming a 空欄 is set inside a
+// drawn frame at about half the size of the body text, and reading it as part
+// of a whole page loses it more often than not — Vision has no word to fit it
+// into and the frame's rules crowd it.  Given the rectangle on its own, at a
+// much higher resolution, it has a chance.
+//
+// Same input as `ink`: [{"page":N,"x":..,"y":..,"w":..,"h":..}] in normalised
+// top-left coordinates.  The answer is one object per rectangle, in order, with
+// the best reading and up to three candidates for it.
+struct RectText: Codable { let text: String; let conf: Float; let alts: [String] }
+
+func rectOCR(doc: PDFDocument, dpi: Double) {
+    let data = FileHandle.standardInput.readDataToEndOfFile()
+    guard let rects = try? JSONDecoder().decode([InkRect].self, from: data) else {
+        die("rectocr: expected a JSON array of {page,x,y,w,h} on stdin")
+    }
+    let scale = dpi / 72.0
+    var out = [RectText](repeating: RectText(text: "", conf: 0, alts: []),
+                         count: rects.count)
+    var byPage: [Int: [Int]] = [:]
+    for (i, r) in rects.enumerated() { byPage[r.page, default: []].append(i) }
+
+    for (pageNo, idxs) in byPage {
+        guard pageNo >= 1, pageNo <= doc.pageCount, let page = doc.page(at: pageNo - 1)
+        else { continue }
+        let box = displayBox(page)
+        let w = Int((box.width * scale).rounded()), h = Int((box.height * scale).rounded())
+        guard w > 0, h > 0,
+              let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8,
+                                  bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)
+        else { continue }
+        ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+        ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+        ctx.saveGState()
+        ctx.scaleBy(x: scale, y: scale)
+        ctx.interpolationQuality = .high
+        page.draw(with: .mediaBox, to: ctx)
+        ctx.restoreGState()
+        guard let full = ctx.makeImage() else { continue }
+
+        for i in idxs {
+            let r = rects[i]
+            let px = CGRect(x: (r.x * Double(w)).rounded(), y: (r.y * Double(h)).rounded(),
+                            width: (r.w * Double(w)).rounded(),
+                            height: (r.h * Double(h)).rounded())
+                .intersection(CGRect(x: 0, y: 0, width: w, height: h))
+            guard px.width >= 8, px.height >= 8, let crop = full.cropping(to: px) else { continue }
+            let req = VNRecognizeTextRequest()
+            req.recognitionLevel = .accurate
+            req.recognitionLanguages = ["ja-JP", "en-US"]
+            // A single letter has no sentence around it to be corrected into.
+            req.usesLanguageCorrection = false
+            if #available(macOS 13.0, *) { req.revision = VNRecognizeTextRequestRevision3 }
+            let handler = VNImageRequestHandler(cgImage: crop, options: [:])
+            guard (try? handler.perform([req])) != nil else { continue }
+            var best: VNRecognizedText? = nil
+            var alts: [String] = []
+            for o in req.results ?? [] {
+                let cands = o.topCandidates(3)
+                guard let top = cands.first else { continue }
+                if best == nil || top.confidence > best!.confidence { best = top }
+                alts += cands.map { $0.string }
+            }
+            if let b = best {
+                out[i] = RectText(text: b.string, conf: b.confidence, alts: alts)
+            }
+        }
+    }
+    let enc = JSONEncoder()
+    enc.outputFormatting = [.withoutEscapingSlashes]
+    print(String(data: try! enc.encode(out), encoding: .utf8)!)
+}
+
 // MARK: - ink
 //
 // How much of a rectangle is printed on.  A 空欄 in the 午後 booklets is a drawn
@@ -267,7 +343,7 @@ func inkFractions(doc: PDFDocument, dpi: Double) {
 // MARK: - main
 
 let argv = Array(CommandLine.arguments.dropFirst())
-guard let cmd = argv.first else { die("usage: pdfkit-tool <info|text|render|crop|ocr|ink|icon> ...") }
+guard let cmd = argv.first else { die("usage: pdfkit-tool <info|text|render|crop|ocr|ink|rectocr|icon> ...") }
 let rest = Array(argv.dropFirst())
 let positional = { () -> [String] in
     var out: [String] = []; var i = 0
@@ -301,6 +377,10 @@ case "text":
 case "ink":
     inkFractions(doc: loadDoc(positional[0]),
                  dpi: Double(flagValue(rest, "--dpi") ?? "200") ?? 200)
+
+case "rectocr":
+    rectOCR(doc: loadDoc(positional[0]),
+            dpi: Double(flagValue(rest, "--dpi") ?? "600") ?? 600)
 
 case "icon":
     guard positional.count >= 2 else { die("icon needs <size> <out.png>") }

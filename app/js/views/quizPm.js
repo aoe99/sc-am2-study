@@ -22,7 +22,7 @@ const CIRCLED = /[①-⑳]/g;
 // The empty form is matched too, but only so it can be rendered plainly. A
 // frame that kept its letter is certainly a 空欄 and is called out; an empty one
 // cannot be told from the spacing of a diagram or the rule between two columns
-// — 990 remain in the 事例 against 585 that carry a letter — so highlighting
+// — 893 remain in the 事例 against 755 that carry a letter — so highlighting
 // them all pointed the reader at the wrong thing more often than the right one.
 const ANCHOR = /[①-⑳]|［\s*([^］\s]{1,3})?\s*］/g;
 const UNDERLINE_REF = /下線\s*([①-⑳])/g;
@@ -115,6 +115,7 @@ export default async function renderQuizPm({ view, extra, go, ctx }) {
    */
   async function caseNode(c) {
     const box = el('div', { class: 'casebody' });
+    const blank = blanksOf(c);
     if (c.intent) {
       box.append(el('details', { class: 'intent' },
         el('summary', { text: '出題趣旨' }),
@@ -140,7 +141,7 @@ export default async function renderQuizPm({ view, extra, go, ctx }) {
           if (body[j].kind !== 'figure') break;
           hidden.add(j);
           for (const m of body[j].text.matchAll(ANCHOR)) {
-            if (m[1]) blanks.add(m[1]);
+            if (m[1]) { if (blank.has(m[1])) blanks.add(m[1]); }
             else if (!m[0].startsWith('［')) marks.add(m[0]);
           }
         }
@@ -166,30 +167,43 @@ export default async function renderQuizPm({ view, extra, go, ctx }) {
           if (label) node.dataset.fig = label;
           box.append(node);
         }
-        const cap = marked(b.text, el('p', { class: 'cap' }));
+        const cap = marked(b.text, el('p', { class: 'cap' }), blank);
         // The caption carries the name too, so a 表 whose crop failed can still
         // be reached — the reader lands on its fragments rather than nowhere.
         if (label && !fig) cap.dataset.fig = label;
         box.append(cap);
       } else if (b.kind === 'figure') {
-        if (!hidden.has(i)) box.append(marked(b.text, el('pre', { class: 'figtext' })));
+        if (!hidden.has(i))
+          box.append(marked(b.text, el('pre', { class: 'figtext' }), blank));
       } else {
-        box.append(marked(b.text, el('p', {})));
+        box.append(marked(b.text, el('p', {}), blank));
       }
     }
     return box;
   }
 
+  /** The 空欄 letters this 事例 really has, as the 解答例 names them.
+   *
+   *  Brackets in the 事例 are not all 空欄: a listing prints argv［1］, a 設問
+   *  quotes ［チョコ］ as a search term, and the scan cuts a particle out of a
+   *  line into ［を］. 133 of the 755 framed letters are one of those, and
+   *  calling them 空欄 sends the reader looking in the wrong place.
+   */
+  function blanksOf(c) {
+    return new Set(c && c.blanks ? c.blanks : []);
+  }
+
   /** Fill a node with text, anchoring every 下線 marker and 空欄 in it. */
-  function marked(text, node) {
+  function marked(text, node, blank = null) {
     let last = 0;
     for (const m of String(text).matchAll(ANCHOR)) {
       if (m.index > last) node.append(text.slice(last, m.index));
+      const isBlank = m[1] && (!blank || blank.has(m[1]));
       node.append(!m[0].startsWith('［')
         ? el('span', { class: 'uline', dataset: { uline: m[0] } }, m[0])
-        : m[1]
+        : isBlank
           ? el('span', { class: 'uline blank', dataset: { blank: m[1] } }, m[0])
-          : m[0]);                          // an empty frame: shown as it reads
+          : m[0]);      // an empty frame, or brackets the booklet really prints
       last = m.index + m[0].length;
     }
     node.append(text.slice(last));
@@ -204,13 +218,16 @@ export default async function renderQuizPm({ view, extra, go, ctx }) {
   function reachable(c) {
     const keys = new Set();
     if (!c) return keys;
+    const blank = blanksOf(c);
     for (const f of c.figures || []) if (f.label) keys.add(f.label);
     for (const b of c.body || []) {
       const m = FIG_REF.exec(b.text);
       FIG_REF.lastIndex = 0;
       if (b.kind === 'caption' && m && m.index === 0) keys.add(figLabel(m[1], m[2]));
-      for (const a of b.text.matchAll(ANCHOR))
-        if (a[1] || !a[0].startsWith('［')) keys.add(a[1] || a[0]);
+      for (const a of b.text.matchAll(ANCHOR)) {
+        if (!a[0].startsWith('［')) keys.add(a[0]);
+        else if (a[1] && blank.has(a[1])) keys.add(a[1]);
+      }
     }
     return keys;
   }

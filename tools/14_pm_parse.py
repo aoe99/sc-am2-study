@@ -13,14 +13,16 @@ The booklet is laid out plainly enough to read by position:
 
 The 空欄 boxes do not survive OCR — the frame is a drawing and the letter inside
 is often too small for Vision — so they are found the other way round, as a gap
-between two fragments of the same line that is too wide to be spacing.  Where
-the letter did come through it goes into the marker (［a］) and where it did not
-the box is left empty (［　］) rather than guessed at.
+between two fragments of the same line that is too wide to be spacing.  Each of
+those is then rendered on its own at 600dpi and read again, and the letter is
+taken only when the 解答例 of that 大問 has exactly one label it could be.  A
+frame nothing certain can be said about is left empty (［　］) rather than
+guessed at.
 
     python3 tools/14_pm_parse.py [session ...]
 """
 from __future__ import annotations
-import json, re, sys
+import json, re, sys, unicodedata
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sclib import (PDFTOOL, PM_PAPERS, build_dir, clean, pdf_path, pm_papers_of,
@@ -39,15 +41,62 @@ MARK_OPEN, MARK_CLOSE = "\ue000", "\ue001"
 PENDING = re.compile(MARK_OPEN + r"(\d+)" + MARK_CLOSE)
 
 
+def grown(r: dict, up: float, tall: float) -> dict:
+    """A gap's rectangle opened out to take in the frame drawn around it.
+
+    A 空欄 frame stands taller than the line of text it sits in, so the gap
+    between two runs of OCR — which is only as tall as the text — has to be
+    grown before either the ink or the letter inside can be looked at.
+    """
+    return {"page": r["page"], "x": r["x"], "w": r["w"],
+            "y": max(0.0, r["y"] - r["h"] * up), "h": r["h"] * tall}
+
+
 def ink_of(pdf, rects: list[dict]) -> list[float]:
     """Ask the Swift tool how much of each rectangle is printed on."""
     if not rects:
         return []
     r = subprocess.run([str(PDFTOOL), "ink", str(pdf)],
-                       input=_json.dumps(rects), capture_output=True, text=True)
+                       input=_json.dumps([grown(x, 0.6, 2.2) for x in rects]),
+                       capture_output=True, text=True)
     if r.returncode != 0:
         raise RuntimeError(f"pdfkit-tool ink failed: {r.stderr.strip()}")
     return _json.loads(r.stdout)
+
+
+# The letter naming a 空欄 is set inside the frame at about half the size of the
+# body text. Read as part of a whole page it is lost more often than not — 994
+# frames came back empty against 589 that kept their letter — so each frame is
+# read again on its own, at 600dpi instead of 400.
+FRAME_DPI = 600
+# How far above and below the line to reach for the frame, as a multiple of the
+# line's own height. Read twice: a tight crop and a loose one see different
+# letters, and putting both sets of readings in front of the label test finds a
+# tenth more frames than either alone without costing it any of its accuracy.
+FRAME_CROPS = [0.5, 0.8]
+
+
+def frame_text(pdf, rects: list[dict]) -> list[list[str]]:
+    """Vision's readings of each frame: single characters, best first."""
+    out: list[list[str]] = [[] for _ in rects]
+    for up in FRAME_CROPS:
+        if not rects:
+            break
+        r = subprocess.run([str(PDFTOOL), "rectocr", str(pdf), "--dpi", str(FRAME_DPI)],
+                           input=_json.dumps([grown(x, up, 1 + 2 * up) for x in rects]),
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            raise RuntimeError(f"pdfkit-tool rectocr failed: {r.stderr.strip()}")
+        for seen, got in zip(out, _json.loads(r.stdout)):
+            for c in [got["text"]] + got["alts"]:
+                c = c.strip()
+                if len(c) == 1 and norm_label(c) not in seen:
+                    seen.append(norm_label(c))
+    return out
+
+
+def norm_label(s: str) -> str:
+    return unicodedata.normalize("NFKC", s).casefold()
 
 # The same known Vision misreads 午前 corrects: ロ/口, HITP for HTTP, and so on.
 CORR = read_json(Path(__file__).resolve().parent / "corrections.json")
@@ -221,14 +270,13 @@ def rows_of(page: dict, page_no: int, pending: list | None = None) -> list[dict]
                     else:
                         # Held until the page says whether anything is printed
                         # in the gap.
+                        top = min(g["y"] for g in frags)
                         pending.append({
-                            "page": page_no, "x": frags[i - 1]["x"] + frags[i - 1]["w"],
-                            "y": max(0.0, min(f["y"] for f in frags)
-                                     - (max(f["y"] + f["h"] for f in frags)
-                                        - min(f["y"] for f in frags)) * 0.6),
+                            "page": page_no,
+                            "x": frags[i - 1]["x"] + frags[i - 1]["w"],
+                            "y": top,
                             "w": frags[i]["x"] - (frags[i - 1]["x"] + frags[i - 1]["w"]),
-                            "h": (max(f["y"] + f["h"] for f in frags)
-                                  - min(f["y"] for f in frags)) * 2.2,
+                            "h": max(g["y"] + g["h"] for g in frags) - top,
                         })
                         parts.append(f"{MARK_OPEN}{len(pending) - 1}{MARK_CLOSE}")
             just_boxed = False
@@ -247,7 +295,7 @@ def rows_of(page: dict, page_no: int, pending: list | None = None) -> list[dict]
     return out
 
 
-def load_rows(sid: str, paper: str) -> list[dict]:
+def load_rows(sid: str, paper: str) -> tuple[list[dict], dict]:
     path = build_dir("pm") / "ocr" / f"{sid}-{paper}.json"
     pages = json.loads(path.read_text(encoding="utf-8"))
     pending: list[dict] = []
@@ -266,14 +314,40 @@ def load_rows(sid: str, paper: str) -> list[dict]:
                 continue
             rows.append(r)
 
-    # One question to the page for every gap in the booklet, then each held
-    # marker becomes a box or a space.
-    inked = ink_of(pdf_path(sid, "1問題", "pm", paper), pending)
+    # One question to the page for every gap in the booklet: a gap with nothing
+    # printed in it is white paper, not a frame, and becomes a space.
+    pdf = pdf_path(sid, "1問題", "pm", paper)
+    inked = ink_of(pdf, pending)
+    frames = [i for i, v in enumerate(inked) if v >= INK_MIN]
     for r in rows:
         r["text"] = fix(PENDING.sub(
-            lambda m: "［　］" if inked[int(m.group(1))] >= INK_MIN else " ",
+            lambda m: m.group(0) if inked[int(m.group(1))] >= INK_MIN else " ",
             r["text"]))
-    return [r for r in rows if r["text"].strip()]
+    # The frames that are left keep their marker until the 大問 they belong to
+    # is known: which letters it can be naming is what tells a reading apart
+    # from a misreading.
+    read = dict(zip(frames, frame_text(pdf, [pending[i] for i in frames])))
+    return [r for r in rows if r["text"].strip()], read
+
+
+def resolve_frames(rows: list[dict], read: dict, labels: set) -> None:
+    """Give each 空欄 frame the label it holds, where that is beyond doubt.
+
+    A frame is read as up to three single characters, and the 解答例 says which
+    labels this 大問 has. Exactly one of the readings being one of those labels
+    is the whole test: it is what separates an "a" from the "α" of the drawing
+    beside it, and 0 or 2 matches means the frame stays empty rather than
+    labelled wrongly. On the frames whose letter was legible on the page scan
+    this picks the right one 97% of the time.
+    """
+    by = {norm_label(l): l for l in labels}
+
+    def one(m: re.Match) -> str:
+        hits = [by[c] for c in read.get(int(m.group(1)), []) if c in by]
+        return f"［{hits[0]}］" if len(hits) == 1 else "［　］"
+
+    for r in rows:
+        r["text"] = PENDING.sub(one, r["text"])
 
 
 def join_wrapped_heads(rows: list[dict]) -> list[dict]:
@@ -518,10 +592,14 @@ def build_items(rows: list[dict]) -> list[dict]:
     return [i for i in items if i["text"]]
 
 
-def parse_paper(sid: str, paper: str) -> dict:
-    rows = load_rows(sid, paper)
+def parse_paper(sid: str, paper: str, answers: dict | None = None) -> dict:
+    rows, read = load_rows(sid, paper)
+    key = (answers or {}).get(sid, {}).get(paper, {})
     cases = {}
     for no, title, body_rows in split_cases(rows, PM_PAPERS[paper]["cases"]):
+        resolve_frames(body_rows, read,
+                       {p["label"] for i in key.get(str(no), {}).get("items", [])
+                        for p in i["parts"] if p["label"]})
         cut = next((i for i, r in enumerate(body_rows) if is_setsu_head(r)),
                    len(body_rows))
         pages = sorted({r["page"] for r in body_rows})
@@ -544,7 +622,7 @@ def main() -> None:
             if not (build_dir("pm") / "ocr" / f"{sid}-{paper}.json").exists():
                 bad.append(f"{sid}/{paper}: OCR結果がない（03_ocr.py --section pm）")
                 continue
-            cases = parse_paper(sid, paper)
+            cases = parse_paper(sid, paper, answers)
             want = PM_PAPERS[paper]["cases"]
             if len(cases) != want:
                 bad.append(f"{sid}/{paper}: 大問 {len(cases)}/{want}")
