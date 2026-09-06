@@ -511,11 +511,19 @@ def build_body(rows: list[dict]) -> list[dict]:
     the sentence above it, which is how a table ends up mid-paragraph.
     """
     base = base_indent(rows)
+    # Where the text column ends. A caption is centred, so it stops short of it;
+    # prose is set to the full measure.
+    measure = max((r["x"] + r.get("w", 0) for r in rows), default=1.0)
     out: list[dict] = []
     in_figure = False
     for r in rows:
         text, x = r["text"], r["x"]
-        caption = bool(CAPTION.match(text)) and x > base + 0.04
+        # A caption sits in from both margins. Being well in from the left is
+        # enough on its own; a long one that only just clears the indent — 表4 of
+        # 平29秋 問1 starts 0.037 in — is told from prose by its right-hand end.
+        caption = bool(CAPTION.match(text)) and (
+            x > base + 0.04
+            or (x > base + 0.02 and x + r.get("w", 0) < measure - 0.04))
         opens = caption or bool(COLUMNS.match(text))
         indented = base + 0.012 <= x <= base + 0.045
         if opens:

@@ -149,6 +149,12 @@ def pm_close_up(text: str) -> str:
     return text
 
 
+# The same doubling with the closing rule read as a katakana コ. Only between a
+# closed frame and the "に入れる" that follows it: everywhere else "［a］コマンド"
+# and "［a］コインジェクション" are what the booklet really prints.
+PM_TAIL_KO = re.compile(r"(?<=］)\s*コ(?=に入れる)")
+
+
 def pm_drop_double_close(text: str) -> str:
     return PM_DOUBLE_CLOSE.sub(
         lambda m: m.group(0) if OPENER[m.group(1)] in text[:m.start()] else "］",
@@ -441,8 +447,8 @@ def pm_reorder_markers(body: list[dict], asked: set) -> None:
 
 def pm_wording(text: str, parts: list[dict]) -> str:
     """A 設問文 with its 空欄 put back the way the 解答例 names them."""
-    text = pm_join_split_box(pm_quoted_label(pm_drop_double_close(text), parts),
-                             parts)
+    text = pm_drop_double_close(PM_TAIL_KO.sub("", text))
+    text = pm_join_split_box(pm_quoted_label(text, parts), parts)
     text = pm_fix_ends(pm_fix_range(text, parts), parts)
     return pm_close_up(pm_fix_labels(pm_put_back_blank(text, parts), parts))
 

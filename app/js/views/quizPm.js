@@ -22,7 +22,7 @@ const CIRCLED = /[①-⑳]/g;
 // The empty form is matched too, but only so it can be rendered plainly. A
 // frame that kept its letter is certainly a 空欄 and is called out; an empty one
 // cannot be told from the spacing of a diagram or the rule between two columns
-// — 805 remain in the 事例 against 886 that carry a letter — so highlighting
+// — 806 remain in the 事例 against 887 that carry a letter — so highlighting
 // them all pointed the reader at the wrong thing more often than the right one.
 const ANCHOR = /[①-⑳]|［\s*([^］\s]{1,3})?\s*］/g;
 const UNDERLINE_REF = /下線\s*([①-⑳])/g;
@@ -186,7 +186,7 @@ export default async function renderQuizPm({ view, extra, go, ctx }) {
    *
    *  Brackets in the 事例 are not all 空欄: a listing prints argv［1］, a 設問
    *  quotes ［チョコ］ as a search term, and the scan cuts a particle out of a
-   *  line into ［を］. 133 of the 886 framed letters are one of those, and
+   *  line into ［を］. 133 of the 887 framed letters are one of those, and
    *  calling them 空欄 sends the reader looking in the wrong place.
    */
   function blanksOf(c) {
@@ -252,6 +252,11 @@ export default async function renderQuizPm({ view, extra, go, ctx }) {
    *  key's labels line up with the markers in the wording — one label for one
    *  marker, or a single label throughout — because a link to the wrong blank
    *  is worse than none.
+   *
+   *  A reference that leads nowhere falls back on the drawing the same sentence
+   *  named before it: "表4中の［d］に入れる" cannot reach ［d］ when the letter
+   *  never came out of the table, but 表4 itself is right there and is where the
+   *  reader was going anyway.
    */
   function questionText(text, parts, c) {
     const keys = reachable(c);
@@ -273,6 +278,7 @@ export default async function renderQuizPm({ view, extra, go, ctx }) {
 
       const p = el('p');
       let last = 0;
+      let named = null;                  // the 図/表 this line last pointed at
       for (const r of refs) {
         if (r.at < last) continue;                 // overlapping match
         if (r.kind === 'blank') {
@@ -280,7 +286,12 @@ export default async function renderQuizPm({ view, extra, go, ctx }) {
           r.key = r.letter && keys.has(r.letter) ? r.letter : nth;
           seen += 1;
         }
-        if (!r.key || !keys.has(r.key)) continue;
+        if (r.kind === 'fig' && keys.has(r.key)) named = r.key;
+        if (!r.key || !keys.has(r.key)) {
+          if (r.kind === 'fig' || !named) continue;
+          r.key = named;
+          r.kind = 'fig';
+        }
         if (r.at > last) p.append(line.slice(last, r.at));
         p.append(el('button', {
           class: 'ulink',
