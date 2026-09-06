@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sclib import (SESSIONS, SESSION_IDS, SECTIONS, CHOICE_KEYS, PM_PAPERS, ROOT,
                    DATA, BUILD, build_dir, clean, exam_name, pdf_path,
                    pm_papers_of, read_json, write_json)
+import statistics
 
 SCHEMA_VERSION = 1
 TAGS = read_json(Path(__file__).resolve().parent / "tags.json")
@@ -519,6 +520,87 @@ def pm_place_missing_blank(body: list[dict], order: list[str],
             i, at, to, _, _ = seq[k]
             text = body[i]["text"]
             body[i]["text"] = text[:at] + f"［{label}］" + text[to:]
+        left = [l for _, l in run[len(here):]]
+        left = [l for l in left if not _frame_loose(body, l)]
+        if left:
+            stop = seq[end][0] if end < len(seq) else len(body)
+            _insert_missing(body, left, seq[start][0], stop)
+
+
+# The letter is in the 事例 but its frame is not: "が b コ 応弱性" for
+# "が［b］脆弱性", "「f として" for "［f］として". Taken only for a blank that is
+# missing altogether, only where the letter stands on its own with a particle
+# beside it and appears just once in the whole 事例 — and never a circled
+# number, which in these booklets marks a 下線 and not a blank.
+PM_LOOSE_CLOSE = "」】〕コ"
+
+
+def _frame_loose(body: list[dict], label: str) -> bool:
+    if not re.match(r"[A-Za-zａ-ｚあ-んα-ωァ-ヶ]$", label):
+        return False
+    found = []
+    for i, b in enumerate(body):
+        if b["kind"] != "para":
+            continue
+        for m in re.finditer(rf"(?<![0-9A-Za-z]){re.escape(label)}(?![0-9A-Za-z])",
+                             b["text"]):
+            left, right = b["text"][m.start() - 1:m.start()], b["text"][m.end():m.end() + 1]
+            if PM_KANA.match(left or " ") or PM_KANA.match(right or " "):
+                found.append((i, m.start(), m.end()))
+    if len(found) != 1:
+        return False
+    i, at, to = found[0]
+    text = body[i]["text"]
+    # The frame's own rules come through as 「 and 」 as often as they vanish.
+    if text[at - 1:at] in "「【〔":
+        at -= 1
+    if text[to:to + 1] in PM_LOOSE_CLOSE:
+        to += 1
+    body[i]["text"] = text[:at] + f"［{label}］" + text[to:]
+    return True
+
+
+# A line the scan lost outright leaves a hole in the page: the 事例 skips from
+# one line to the next but the paper has room between them for one more. That is
+# how "・［j］" disappears — a bullet and an empty frame, with no text on the line
+# for Vision to catch hold of. Where a blank is still missing and the stretch it
+# has to be in has exactly one such hole, the frame goes there on a line of its
+# own. Two and a half times the page's own line pitch: a paragraph break is
+# under two, a 節 heading about two.
+PM_HOLE = 2.5
+PM_PAGE_NO = re.compile(r"^[-–—ー−ｰ=＝~〜_]?\s*\d{1,3}\s*[-–—ー−ｰ=＝~〜_]?$")
+
+
+def _insert_missing(body: list[dict], labels: list[str],
+                    first: int, last: int) -> None:
+    pitch = _pitch(body)
+    holes = []
+    for i in range(first, min(last, len(body)) - 1):
+        a, b = body[i], body[i + 1]
+        step = pitch.get(a["page"])
+        if (not step or b["page"] != a["page"] or b.get("y", 1) > 0.88
+                or PM_PAGE_NO.match(a["text"].strip())
+                or PM_PAGE_NO.match(b["text"].strip())):
+            continue
+        if b.get("y", 0) - a.get("y", 0) >= step * PM_HOLE:
+            holes.append(i)
+    if len(holes) != 1 or len(labels) != 1:
+        return
+    at = holes[0]
+    body.insert(at + 1, {"kind": "para", "text": f"［{labels[0]}］",
+                         "page": body[at]["page"],
+                         "y": (body[at]["y"] + body[at + 1]["y"]) / 2,
+                         "x": body[at]["x"], "w": 0.0, "h": 0.0, "lines": 1})
+
+
+def _pitch(body: list[dict]) -> dict:
+    """How far apart this page sets its lines, page by page."""
+    by: dict = {}
+    for i in range(len(body) - 1):
+        if body[i + 1]["page"] == body[i]["page"]:
+            by.setdefault(body[i]["page"], []).append(
+                body[i + 1].get("y", 0) - body[i].get("y", 0))
+    return {p: statistics.median(v) for p, v in by.items() if v}
 
 
 def _runs(missing: list) -> list[list]:
@@ -538,7 +620,7 @@ def _placeable(body: list[dict], span: tuple) -> bool:
         return False
     text = body[i]["text"]
     left, right = text[at - 1:at], text[to:to + 1]
-    return (not _wordish(left) and not _wordish(right)
+    return (not _wordish(left)
             and (PM_KANA.match(left or " ") or PM_KANA.match(right or " "))
             and not PM_ARROW.search(text))
 
