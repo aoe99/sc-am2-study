@@ -71,10 +71,11 @@ def ink_of(pdf, rects: list[dict]) -> list[float]:
 # read again on its own, at 600dpi instead of 400.
 FRAME_DPI = 600
 # How far above and below the line to reach for the frame, as a multiple of the
-# line's own height. Read twice: a tight crop and a loose one see different
-# letters, and putting both sets of readings in front of the label test finds a
-# tenth more frames than either alone without costing it any of its accuracy.
-FRAME_CROPS = [0.5, 0.8]
+# line's own height. Read three times: the crops see different letters, and
+# putting all of the readings in front of the label test finds a fifth more
+# frames than one alone without costing it any of its accuracy (97% either way,
+# 63% of the legible frames recovered with one crop against 78% with three).
+FRAME_CROPS = [0.2, 0.5, 0.8]
 
 
 def frame_text(pdf, rects: list[dict]) -> list[list[list[str]]]:
@@ -140,6 +141,7 @@ def fix(s: str) -> str:
 # in the merged 午後, "設問1～4に答えよ" in the older 午後I / 午後II, and sometimes
 # it wraps onto the next line. The invariant is what comes before it.
 CASE_HEAD = re.compile(r"^[問間]\s*([0-9０-９]{1,2})\s*(.*?)に関する次の記述を読んで")
+CASE_OPEN = re.compile(r"^[問間]\s*[0-9０-９]{1,2}\s*\S")
 SETSU = re.compile(r"^設問\s*([0-9０-９]{1,2})\s*")
 # "設問1～3に答えよ。" is the tail of a 問N heading that wrapped, not a 設問 of its
 # own — counted as one it closes the 大問 a page early and swallows the 事例.
@@ -229,10 +231,11 @@ def column_edges(rows: list[dict]) -> list[float]:
 
 # A 空欄 at the very start of a printed line has no fragment before it, so there
 # is no gap between two runs to find it by. What gives it away is the indent:
-# the line starts at a measure the page uses nowhere else and the line above it
-# runs the full width, so nothing but a frame can be holding it in. These are
-# inferred rather than seen, so unlike the others they only become a 空欄 when
-# the letter inside is read — an empty one would just be a guess.
+# the line starts further in than the line above it, and the frame is what fills
+# the difference. Most such lines are nothing of the kind — every 会話 wraps to a
+# hanging indent — so these are inferred rather than seen, and unlike the other
+# frames they only become a 空欄 when the ink test says something is printed
+# there and exactly one letter is read out of it.
 EDGE_MIN = 0.04
 INDENT_TOL = 0.012
 
@@ -242,6 +245,23 @@ def indents(rows: list[dict]) -> list[float]:
     seen = Counter(round(min(f["x"] for f in r["frags"]) / 0.005) * 0.005
                    for r in rows)
     return sorted(x for x, n in seen.items() if n >= 2)
+
+
+def base_of(rows: list[dict]) -> float:
+    """The left edge this page sets most of its text at."""
+    seen = Counter(round(min(f["x"] for f in r["frags"]) / 0.005) * 0.005
+                   for r in rows)
+    return seen.most_common(1)[0][0] if seen else 0.0
+
+
+# Japanese is justified to the measure, so a line of prose that stops short of
+# it and is not the end of its paragraph is being held short by something, and
+# in these booklets that is a 空欄 frame. Only prose: a table's rows and a
+# drawing's labels stop wherever their cell does, which is why the line and the
+# one under it must both be free of column gaps and sit at the page's own
+# indent. And not after a 。 or a latin word, where the short end is the line
+# breaking of its own accord.
+TAIL_STOP = re.compile(r"[。．.、，,]$|[0-9A-Za-z]$")
 
 
 def rows_of(page: dict, page_no: int, pending: list | None = None,
@@ -296,6 +316,7 @@ def rows_of(page: dict, page_no: int, pending: list | None = None,
         parts = []
         # A frame holding the line in from the left, if the indent says so.
         x0 = frags[0]["x"]
+        base = base_of(rows)
         right = max(f["x"] + f["w"] for f in frags)
         above = rows[n_row - 1]["frags"] if n_row else []
         left = min((f["x"] for f in above), default=x0)
@@ -306,13 +327,16 @@ def rows_of(page: dict, page_no: int, pending: list | None = None,
         # Lines that open something of their own are set where they are for a
         # reason, and a marker in front of them would hide what they open.
         raw = "".join(f["text"] for f in frags).strip()
+        prev_raw = "".join(f["text"] for f in above).strip()
         opens = (CAPTION.match(raw) or SETSU.match(raw) or SUB.match(raw)
-                 or CASE_HEAD.match(raw) or SECTION.match(raw))
+                 or CASE_HEAD.match(raw) or SECTION.match(raw)
+                 # A 大問 heading that wraps: the line under it finishes
+                 # "…に関する次の記述を読んで", and a marker in front of it hides
+                 # the join that puts the heading back together.
+                 or CASE_OPEN.match(prev_raw))
         if (pending is not None and edges is not None and n_row > 0
                 and not centred and not opens
-                and not any(abs(x0 - c) <= INDENT_TOL for c in cols)
-                and x0 - left >= EDGE_MIN
-                and max(f["x"] + f["w"] for f in above) >= measure - 0.02):
+                and x0 - left >= EDGE_MIN):
             # The frame runs from where the line would have started — the left
             # edge of the line above, which is in the same block — to where it
             # actually does.
@@ -323,6 +347,20 @@ def rows_of(page: dict, page_no: int, pending: list | None = None,
             edges.add(len(pending) - 1)
             parts.append(f"{MARK_OPEN}{len(pending) - 1}{MARK_CLOSE}")
         just_boxed = False
+        tail = None
+        nxt = rows[n_row + 1] if n_row + 1 < len(rows) else None
+        if (pending is not None and edges is not None and nxt
+                and not r["gaps"] and not nxt["gaps"]
+                and abs(x0 - base) <= INDENT_TOL
+                and abs(min(f["x"] for f in nxt["frags"]) - base) <= INDENT_TOL
+                and measure - right >= EDGE_MIN
+                and not TAIL_STOP.search(raw)):
+            top = min(f["y"] for f in frags)
+            pending.append({"page": page_no, "x": right, "y": top,
+                            "w": measure - right,
+                            "h": max(f["y"] + f["h"] for f in frags) - top})
+            edges.add(len(pending) - 1)
+            tail = f"{MARK_OPEN}{len(pending) - 1}{MARK_CLOSE}"
         for i, f in enumerate(frags):
             body = f["text"].strip()
             if i in boxed:
@@ -352,6 +390,8 @@ def rows_of(page: dict, page_no: int, pending: list | None = None,
                         parts.append(f"{MARK_OPEN}{len(pending) - 1}{MARK_CLOSE}")
             just_boxed = False
             parts.append(body)
+        if tail:
+            parts.append(tail)
         text = BOX_GLYPH.sub("［　］", fix(clean("".join(parts))))
         if not text:
             continue
@@ -421,10 +461,12 @@ def resolve_frames(rows: list[dict], read: dict, edges: set, labels: set) -> Non
             hits = [by[c] for c in alts if c in by]
             if len(hits) == 1:
                 boxes.append(f"［{hits[0]}］")
-        if boxes:
-            return "".join(boxes)
-        # A frame only the indent spoke for stands or falls on its letter.
-        return "" if at in edges else "［　］"
+        # A frame only the measure spoke for stands or falls on its letter, and
+        # on there being just the one: two readings in a gap nothing was seen in
+        # means the crop caught the text beside it.
+        if at in edges:
+            return boxes[0] if len(boxes) == 1 else ""
+        return "".join(boxes) if boxes else "［　］"
 
     for r in rows:
         r["text"] = PENDING.sub(one, r["text"])
@@ -445,9 +487,9 @@ def join_wrapped_heads(rows: list[dict]) -> list[dict]:
             skip = False
             continue
         nxt = rows[i + 1] if i + 1 < len(rows) else None
-        if (nxt and not CASE_HEAD.match(r["text"])
-                and CASE_HEAD.match(r["text"] + nxt["text"])):
-            r = dict(r, text=r["text"] + nxt["text"])
+        joined = PENDING.sub("", r["text"] + nxt["text"]) if nxt else ""
+        if (nxt and not CASE_HEAD.match(r["text"]) and CASE_HEAD.match(joined)):
+            r = dict(r, text=joined)
             skip = True
         out.append(r)
     return out

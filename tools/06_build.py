@@ -153,6 +153,8 @@ def pm_close_up(text: str) -> str:
 # closed frame and the "に入れる" that follows it: everywhere else "［a］コマンド"
 # and "［a］コインジェクション" are what the booklet really prints.
 PM_TAIL_KO = re.compile(r"(?<=］)\s*コ(?=に入れる)")
+# The frame's own right-hand rule, read twice as itself.
+PM_TWICE = re.compile(r"］\s*］")
 
 
 def pm_drop_double_close(text: str) -> str:
@@ -309,7 +311,7 @@ def pm_quoted_label(text: str, parts: list[dict]) -> str:
 # the 事例: a 設問 names two or three blanks, so a letter that is one of them is
 # very unlikely to be anything else.
 PM_ASIDE = re.compile(
-    r"(?<![-ー−0-9A-Za-z])([A-Za-zＡ-Ｚａ-ｚあ-んα-ωァ-ヶ])\s*［[\s　]*］")
+    r"(?<![-ー−0-9A-Za-z])([0-9A-Za-zＡ-Ｚａ-ｚあ-んα-ωァ-ヶ])\s*［[\s　]*］")
 
 
 def pm_wording_labels(text: str, parts: list[dict]) -> str:
@@ -318,9 +320,11 @@ def pm_wording_labels(text: str, parts: list[dict]) -> str:
     if not by:
         return text
     head, sep, rest = text.partition("\n")
-    head = PM_ASIDE.sub(
-        lambda m: f"［{by[_norm(m.group(1))]}］" if _norm(m.group(1)) in by
-        else m.group(0), head)
+    def aside(m: re.Match) -> str:
+        hits = [l for l in by.values() if _stray(m.group(1), l)]
+        return f"［{hits[0]}］" if len(hits) == 1 else m.group(0)
+
+    head = PM_ASIDE.sub(aside, head)
     # Nothing framed at all, and the one blank's letter standing loose in the
     # wording exactly once: "本文中のc に入れる" for "本文中の［c］に入れる".
     if len(by) == 1 and not PM_BOX.search(head):
@@ -514,7 +518,7 @@ def pm_reorder_markers(body: list[dict], asked: set) -> None:
 
 def pm_wording(text: str, parts: list[dict]) -> str:
     """A 設問文 with its 空欄 put back the way the 解答例 names them."""
-    text = pm_drop_double_close(PM_TAIL_KO.sub("", text))
+    text = pm_drop_double_close(PM_TWICE.sub("］", PM_TAIL_KO.sub("", text)))
     text = pm_join_split_box(pm_quoted_label(text, parts), parts)
     text = pm_wording_labels(text, parts)
     text = pm_fix_ends(pm_fix_range(text, parts), parts)
