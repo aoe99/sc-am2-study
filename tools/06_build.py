@@ -468,6 +468,51 @@ def pm_put_back_blank(text: str, parts: list[dict]) -> str:
     return head[:at.start()] + f"［{labels[0]}］" + head[at.end():] + sep + rest
 
 
+# Every frame in the 事例, labelled or not, in reading order.
+PM_ANY_BOX = re.compile(r"［[^］]{0,3}］")
+PM_IN_PROSE = re.compile(r"本文中")
+
+
+def pm_place_missing_blank(body: list[dict], order: list[str],
+                           prose: set) -> None:
+    """Put a 空欄 back where the labels either side of it say it must be.
+
+    IPA labels the blanks of a 大問 a, b, c… down the 事例, so a blank the 設問
+    ask about that never came out of the scan is pinned by its neighbours: it
+    lies after the last ［k］ and before the first ［m］. Where exactly one frame
+    in that stretch is still empty, that frame is it.
+
+    Only for a 設問 that says 本文中, and only frames in the prose: 平30秋 問2's
+    ［l］ has three empty frames between ［k］ and the next label, and the other
+    two are cells of a table shown as a picture — which is also why the 設問
+    says 本文中 rather than 表2中. And never where the brackets belong to the
+    text itself: "char *argv［］" is C, not a blank to fill in.
+    """
+    seq = [(i, m.start(), m.group(0)[1:-1].strip(), b["kind"])
+           for i, b in enumerate(body) for m in PM_ANY_BOX.finditer(b["text"])]
+    if not seq:
+        return
+    have = {v for _, _, v, _ in seq}
+    for n, label in enumerate(order):
+        if label in have or n == 0 or n == len(order) - 1:
+            continue
+        before, after = order[n - 1], order[n + 1]
+        if label not in prose or before not in have or after not in have:
+            continue
+        last = max(k for k, (_, _, v, _) in enumerate(seq) if v == before)
+        first = min(k for k, (_, _, v, _) in enumerate(seq) if v == after)
+        here = [k for k in range(last + 1, first)
+                if not seq[k][2] and seq[k][3] == "para"
+                and not _wordish(body[seq[k][0]]["text"][seq[k][1] - 1:seq[k][1]])]
+        if len(here) != 1:
+            continue
+        i, at, _, _ = seq[here[0]]
+        text = body[i]["text"]
+        body[i]["text"] = (text[:at] + f"［{label}］"
+                           + text[at + len(PM_ANY_BOX.match(text, at).group(0)):])
+        have.add(label)
+
+
 PM_MARK = re.compile(r"[①-⑳]")
 
 
@@ -554,6 +599,21 @@ def build_pm(targets: list[str]) -> tuple[list, list, list]:
                 blanks = {p["label"] for i in key.get("items", [])
                           for p in i["parts"] if p["label"]}
                 pm_fix_body_blanks(body["body"], blanks)
+                # The 設問 say where each blank of theirs is; the ones in the
+                # prose can be placed from the labels either side of them.
+                texts = {(i["setsu"], i["sub"]): i for i in body["items"]}
+                order, prose = [], set()
+                for item in key.get("items", []):
+                    wording = texts.get((item["setsu"], item["sub"]), {}).get(
+                        "text", "").split("\n")[0]
+                    for part in item["parts"]:
+                        if not part["label"]:
+                            continue
+                        if part["label"] not in order:
+                            order.append(part["label"])
+                        if PM_IN_PROSE.search(wording):
+                            prose.add(part["label"])
+                pm_place_missing_blank(body["body"], order, prose)
                 prose = "\n".join(b["text"] for b in body["body"]
                                    if b["kind"] in ("para", "heading"))
                 # 翔泳社 is the only one of the four PDFs that names the 事例;
@@ -598,7 +658,6 @@ def build_pm(targets: list[str]) -> tuple[list, list, list]:
                 # The booklet supplies the wording, the 解答例 supplies the
                 # answer; an item exists when the 解答例 has one, because that is
                 # the authoritative list of what was actually asked.
-                texts = {(i["setsu"], i["sub"]): i for i in body["items"]}
                 for n, item in enumerate(key.get("items", []), 1):
                     setsu, sub = item["setsu"], item["sub"]
                     ask = texts.get((setsu, sub), {})
