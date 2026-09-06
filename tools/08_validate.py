@@ -87,13 +87,12 @@ def main() -> int:
         check("全事例に本文がある", not no_body, str(no_body[:5]))
         check("全設問に解答例がある", not no_key, str(no_key[:5]))
         check("全設問が事例に紐づく", not orphan, str(orphan[:5]))
-        # These two are limits of the source material, not of the extraction,
-        # so they are reported with their reason rather than failed — the same
-        # way 午前's short questions are. Both numbers should be watched: a jump
-        # means something in the pipeline broke, not that IPA changed.
-        check(f"設問文が取れている（{len(pm_qs) - len(no_ask)}/{len(pm_qs)}）", True,
-              "残りは R05秋 問4。三つの記入例を並べる解答例の表が、テキスト層では"
-              "列の順に読めず、設問2の小問と対応が付かない。解答例・講評・解説は揃っている")
+        # 設問文 is now complete, so it fails if any go missing again. 解説 is a
+        # limit of the source material, not of the extraction, so it is reported
+        # with its reason rather than failed — the same way 午前's short
+        # questions are.
+        check(f"設問文が取れている（{len(pm_qs) - len(no_ask)}/{len(pm_qs)}）",
+              not no_ask, str(no_ask[:5]))
         check(f"全設問に解説がある（{len(pm_qs) - len(no_exp2)}/{len(pm_qs)}）", True,
               "残りは教科書解説側に その設問の見出しが立っていない回"
               f"（{len(no_exp2)}件）。解答例と採点講評で代替する")

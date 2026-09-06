@@ -161,8 +161,13 @@ def pm_drop_double_close(text: str) -> str:
         text)
 
 
+# The scan reads a full-size kana as its small form often enough to matter, and
+# IPA never labels a 空欄 ァ or ィ, so the two are the same letter here.
+SMALL_KANA = str.maketrans("ァィゥェォヵヶッャュョ", "アイウエオカケツヤユヨ")
+
+
 def _norm(s: str) -> str:
-    return unicodedata.normalize("NFKC", s).casefold()
+    return unicodedata.normalize("NFKC", s).casefold().translate(SMALL_KANA)
 
 
 def _same(a: str, b: str) -> bool:
@@ -195,12 +200,46 @@ PM_RANGE = re.compile(rf"(?:{BOX}\s*){{1,3}}[~～ー−\-]\s*(?:{BOXISH}\s*){{1,
 PM_LEAKED = re.compile(rf"({BOX})\s*[A-Za-z0-9]\s*(?=[~～])")
 
 
-def pm_fix_range(text: str, parts: list[dict]) -> str:
+# IPA sets two blanks side by side and three or more as a range, so two frames
+# with nothing but a separator between them, in a 設問 the 解答例 gives three or
+# more labels, are the ends of a range whatever the letters in them read as.
+# What sits between is the tilde and the frames' own rules, and the scan makes
+# ロ, コ, ｜ and _ of those as readily as it keeps them.
+PM_PAIR = re.compile(rf"{BOX}[\s　～~ー−\-,，、ロコ｜_.]{{0,4}}{BOX}")
+
+
+# a…z / あ…こ / ア…ン / α…ω / ①…⑳: a 設問 names its blanks from one of these
+# alphabets and never mixes two.
+ALPHABETS = [re.compile(r"[A-Za-zＡ-Ｚａ-ｚ]$"), re.compile(r"[ぁ-ん]$"),
+             re.compile(r"[ァ-ヶ]$"), re.compile(r"[α-ωΑ-Ω]$"),
+             re.compile(r"[①-⑳]$")]
+
+
+def _blank_labels(parts: list[dict]) -> list[str]:
+    """The labels that name 空欄, in order.
+
+    A 記述 answer written in two columns is labelled by a phrase — "必要な全ての
+    コード", "作成時" — and those are rows of the 解答例, not blanks in the
+    wording; a range never ends in one. Nor does a 設問 draw from two alphabets
+    at once: 令5秋 問4's 設問2 comes back labelled ① and あ because the ① numbers
+    one of three worked examples in the 解答例, and only あ is a blank.
+    """
     labels = [p["label"] for p in parts if p["label"]]
+    if not all(len(l) <= 2 for l in labels):
+        return []
+    return labels if any(all(a.match(l) for l in labels) for a in ALPHABETS) else []
+
+
+def pm_fix_range(text: str, parts: list[dict]) -> str:
+    labels = _blank_labels(parts)
     if not text or len(labels) < 2:
         return text
-    return PM_RANGE.sub(f"［{labels[0]}］～［{labels[-1]}］",
-                        PM_LEAKED.sub(r"\1", text), count=1)
+    text = PM_LEAKED.sub(r"\1", text)
+    shown = f"［{labels[0]}］～［{labels[-1]}］"
+    out = PM_RANGE.sub(shown, text, count=1)
+    if out == text and len(labels) > 2:
+        out = PM_PAIR.sub(shown, text, count=1)
+    return out
 
 
 # A 空欄 frame the scan swallowed whole. "設問1 表1中の a ～ e に入れる" comes back
@@ -213,7 +252,7 @@ PM_ONE_BLANK = re.compile(r"［\s*([^］\s]{1,3})\s*］")
 
 
 def pm_fix_ends(text: str, parts: list[dict]) -> str:
-    labels = [p["label"] for p in parts if p["label"]]
+    labels = _blank_labels(parts)
     if not text or len(labels) < 2:
         return text
     found = PM_ONE_BLANK.findall(text)
@@ -250,7 +289,7 @@ def pm_join_split_box(text: str, parts: list[dict]) -> str:
 # Only the wording is looked at, never the 解答群 under it, and only latin and
 # hiragana count — katakana would take the ア of a 解答群's own markers.
 PM_QUOTED_LABEL = re.compile(
-    r"[「【〔]?\s*([A-Za-zＡ-Ｚａ-ｚあ-んα-ω])\s*[」】〕コ]")
+    r"[「【〔]?\s*([A-Za-zＡ-Ｚａ-ｚあ-んα-ωァ-ヶ])\s*[」】〕コ]")
 
 
 def pm_quoted_label(text: str, parts: list[dict]) -> str:
@@ -261,6 +300,34 @@ def pm_quoted_label(text: str, parts: list[dict]) -> str:
     head = PM_QUOTED_LABEL.sub(
         lambda m: f"［{by[_norm(m.group(1))]}］" if _norm(m.group(1)) in by
         else m.group(0), head)
+    return head + sep + rest
+
+
+# The same two misplacements as in the 事例, on the 設問 side: the letter set
+# beside its frame instead of inside it, and — where the frame did not survive
+# at all — the letter left standing on its own. Katakana counts here, unlike in
+# the 事例: a 設問 names two or three blanks, so a letter that is one of them is
+# very unlikely to be anything else.
+PM_ASIDE = re.compile(
+    r"(?<![-ー−0-9A-Za-z])([A-Za-zＡ-Ｚａ-ｚあ-んα-ωァ-ヶ])\s*［[\s　]*］")
+
+
+def pm_wording_labels(text: str, parts: list[dict]) -> str:
+    by = {_norm(p["label"]): p["label"] for p in parts
+          if p["label"] and len(p["label"]) == 1}
+    if not by:
+        return text
+    head, sep, rest = text.partition("\n")
+    head = PM_ASIDE.sub(
+        lambda m: f"［{by[_norm(m.group(1))]}］" if _norm(m.group(1)) in by
+        else m.group(0), head)
+    # Nothing framed at all, and the one blank's letter standing loose in the
+    # wording exactly once: "本文中のc に入れる" for "本文中の［c］に入れる".
+    if len(by) == 1 and not PM_BOX.search(head):
+        label = next(iter(by.values()))
+        loose = re.compile(rf"(?<![0-9A-Za-z]){re.escape(label)}(?![0-9A-Za-z])")
+        if len(loose.findall(head)) == 1:
+            head = loose.sub(f"［{label}］", head)
     return head + sep + rest
 
 
@@ -449,6 +516,7 @@ def pm_wording(text: str, parts: list[dict]) -> str:
     """A 設問文 with its 空欄 put back the way the 解答例 names them."""
     text = pm_drop_double_close(PM_TAIL_KO.sub("", text))
     text = pm_join_split_box(pm_quoted_label(text, parts), parts)
+    text = pm_wording_labels(text, parts)
     text = pm_fix_ends(pm_fix_range(text, parts), parts)
     return pm_close_up(pm_fix_labels(pm_put_back_blank(text, parts), parts))
 
@@ -530,6 +598,11 @@ def build_pm(targets: list[str]) -> tuple[list, list, list]:
                 for n, item in enumerate(key.get("items", []), 1):
                     setsu, sub = item["setsu"], item["sub"]
                     ask = texts.get((setsu, sub), {})
+                    if not ask and sub is None:
+                        # 令5秋 問4 の設問2 は、解答例が三つの記入例を①②③で
+                        # 並べるので小問の番号が見えず、鍵の側だけ「設問2」に
+                        # なる。冊子に素の設問2が無く(1)があるなら、それ。
+                        ask = texts.get((setsu, 1), {})
                     qid = f"{case_id}-{setsu}" + (f"-{sub}" if sub else "")
                     text, rate = pm_commentary(cm, setsu, sub)
                     inotes = list(item.get("flags", []))
