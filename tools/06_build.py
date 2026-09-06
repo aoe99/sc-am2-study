@@ -473,44 +473,74 @@ PM_ANY_BOX = re.compile(r"［[^］]{0,3}］")
 PM_IN_PROSE = re.compile(r"本文中")
 
 
+# A 空欄 in running text has a particle on one side of it. A frame between two
+# nouns is a table's column gap or a drawing's spacing, whatever the row was
+# classified as, and an arrow anywhere in the row says the same.
+PM_KANA = re.compile(r"[ぁ-ん、，]")
+PM_ARROW = re.compile(r"[→⇒←↑↓]")
+
+
 def pm_place_missing_blank(body: list[dict], order: list[str],
                            prose: set) -> None:
     """Put a 空欄 back where the labels either side of it say it must be.
 
-    IPA labels the blanks of a 大問 a, b, c… down the 事例, so a blank the 設問
-    ask about that never came out of the scan is pinned by its neighbours: it
-    lies after the last ［k］ and before the first ［m］. Where exactly one frame
-    in that stretch is still empty, that frame is it.
+    IPA labels the blanks of a 大問 a, b, c… down the 事例, so blanks the 設問 ask
+    about that never came out of the scan are pinned by their neighbours: they
+    lie after the last ［k］ and before the first ［n］, in that order. The frames
+    still empty in that stretch take them, first to first.
 
-    Only for a 設問 that says 本文中, and only frames in the prose: 平30秋 問2's
-    ［l］ has three empty frames between ［k］ and the next label, and the other
-    two are cells of a table shown as a picture — which is also why the 設問
-    says 本文中 rather than 表2中. And never where the brackets belong to the
-    text itself: "char *argv［］" is C, not a blank to fill in.
+    Everything here is inference, so it is fenced in hard. Only single-letter
+    labels, only 設問 that say 本文中 (a blank in a 表 is inside a picture, and
+    the 設問 would have said 表2中), only frames in the prose with a particle
+    beside them, and never where the brackets belong to the text itself —
+    "char *argv［］" is C, not a blank to fill in. What is left over is a frame
+    that could hardly be anything else.
     """
-    seq = [(i, m.start(), m.group(0)[1:-1].strip(), b["kind"])
+    seq = [(i, m.start(), m.end(), m.group(0)[1:-1].strip(), b["kind"])
            for i, b in enumerate(body) for m in PM_ANY_BOX.finditer(b["text"])]
     if not seq:
         return
-    have = {v for _, _, v, _ in seq}
-    for n, label in enumerate(order):
-        if label in have or n == 0 or n == len(order) - 1:
+    have = {v for _, _, _, v, _ in seq}
+    missing = [(n, l) for n, l in enumerate(order)
+               if l not in have and len(l) == 1 and l in prose]
+    for run in _runs(missing):
+        first_n, last_n = run[0][0], run[-1][0]
+        if first_n == 0 or order[first_n - 1] not in have:
             continue
-        before, after = order[n - 1], order[n + 1]
-        if label not in prose or before not in have or after not in have:
+        start = max(k for k, s in enumerate(seq) if s[3] == order[first_n - 1])
+        if last_n == len(order) - 1:
+            end = len(seq)
+        elif order[last_n + 1] in have:
+            end = min(k for k, s in enumerate(seq) if s[3] == order[last_n + 1])
+        else:
             continue
-        last = max(k for k, (_, _, v, _) in enumerate(seq) if v == before)
-        first = min(k for k, (_, _, v, _) in enumerate(seq) if v == after)
-        here = [k for k in range(last + 1, first)
-                if not seq[k][2] and seq[k][3] == "para"
-                and not _wordish(body[seq[k][0]]["text"][seq[k][1] - 1:seq[k][1]])]
-        if len(here) != 1:
-            continue
-        i, at, _, _ = seq[here[0]]
-        text = body[i]["text"]
-        body[i]["text"] = (text[:at] + f"［{label}］"
-                           + text[at + len(PM_ANY_BOX.match(text, at).group(0)):])
-        have.add(label)
+        here = [k for k in range(start + 1, end) if _placeable(body, seq[k])]
+        for k, (_, label) in zip(here, run):
+            i, at, to, _, _ = seq[k]
+            text = body[i]["text"]
+            body[i]["text"] = text[:at] + f"［{label}］" + text[to:]
+
+
+def _runs(missing: list) -> list[list]:
+    """The missing labels grouped into consecutive stretches."""
+    out: list[list] = []
+    for x in missing:
+        if out and x[0] == out[-1][-1][0] + 1:
+            out[-1].append(x)
+        else:
+            out.append([x])
+    return out
+
+
+def _placeable(body: list[dict], span: tuple) -> bool:
+    i, at, to, letter, kind = span
+    if letter or kind != "para":
+        return False
+    text = body[i]["text"]
+    left, right = text[at - 1:at], text[to:to + 1]
+    return (not _wordish(left) and not _wordish(right)
+            and (PM_KANA.match(left or " ") or PM_KANA.match(right or " "))
+            and not PM_ARROW.search(text))
 
 
 PM_MARK = re.compile(r"[①-⑳]")
