@@ -239,6 +239,25 @@ def pm_join_split_box(text: str, parts: list[dict]) -> str:
     return PM_SPLIT_BOX.sub(one, text) if labels else text
 
 
+# A frame read as a quotation: its left rule lost or taken for 「, its right one
+# for 」 or 】 or コ. "本文中の［f］に入れる" comes back as "本文中のf」に入れる".
+# Only the wording is looked at, never the 解答群 under it, and only latin and
+# hiragana count — katakana would take the ア of a 解答群's own markers.
+PM_QUOTED_LABEL = re.compile(
+    r"[「【〔]?\s*([A-Za-zＡ-Ｚａ-ｚあ-んα-ω])\s*[」】〕コ]")
+
+
+def pm_quoted_label(text: str, parts: list[dict]) -> str:
+    by = {_norm(p["label"]): p["label"] for p in parts if p["label"]}
+    if not by:
+        return text
+    head, sep, rest = text.partition("\n")
+    head = PM_QUOTED_LABEL.sub(
+        lambda m: f"［{by[_norm(m.group(1))]}］" if _norm(m.group(1)) in by
+        else m.group(0), head)
+    return head + sep + rest
+
+
 def pm_fix_labels(text: str, parts: list[dict]) -> str:
     """Name each 空欄 of a 設問文 the way the 解答例 names it.
 
@@ -313,6 +332,21 @@ def pm_fix_labels(text: str, parts: list[dict]) -> str:
 LOOKALIKE = {"⑥": "©"}
 
 
+# The letter belongs inside the frame, and where the page read set it just
+# outside the 事例 loses the blank a 設問 points at: "d［ ］の対策と併せて" is
+# printed "［d］の対策と併せて". Not after a hyphen or katakana, though —
+# "SaaS-a", "DNS-K" and "サイトA" are names, and their last letter is no more a
+# 空欄 label than the "B" of "B コイン" was.
+PM_LOOSE_LABEL = re.compile(
+    r"(?<![-ー−0-9A-Za-zァ-ヶ])([A-Za-zＡ-Ｚａ-ｚあ-んα-ω])\s*［[\s　]*］")
+
+
+def pm_pull_in_label(text: str, by: dict) -> str:
+    return PM_LOOSE_LABEL.sub(
+        lambda m: f"［{by[_norm(m.group(1))]}］" if _norm(m.group(1)) in by
+        else m.group(0), text)
+
+
 def pm_fix_body_blanks(body: list[dict], labels: set) -> None:
     """Give the 空欄 of the 事例 the letters the 設問 call them by.
 
@@ -326,7 +360,7 @@ def pm_fix_body_blanks(body: list[dict], labels: set) -> None:
     for b in body:
         b["text"] = PM_ONE_BLANK.sub(
             lambda m: f"［{by.get(_norm(m.group(1)), m.group(1))}］",
-            pm_close_up(pm_drop_double_close(b["text"])))
+            pm_pull_in_label(pm_close_up(pm_drop_double_close(b["text"])), by))
 
 
 # A space between two Japanese characters, which sets nothing on its own.
@@ -407,7 +441,8 @@ def pm_reorder_markers(body: list[dict], asked: set) -> None:
 
 def pm_wording(text: str, parts: list[dict]) -> str:
     """A 設問文 with its 空欄 put back the way the 解答例 names them."""
-    text = pm_join_split_box(pm_drop_double_close(text), parts)
+    text = pm_join_split_box(pm_quoted_label(pm_drop_double_close(text), parts),
+                             parts)
     text = pm_fix_ends(pm_fix_range(text, parts), parts)
     return pm_close_up(pm_fix_labels(pm_put_back_blank(text, parts), parts))
 

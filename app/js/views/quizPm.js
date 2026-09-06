@@ -22,7 +22,7 @@ const CIRCLED = /[①-⑳]/g;
 // The empty form is matched too, but only so it can be rendered plainly. A
 // frame that kept its letter is certainly a 空欄 and is called out; an empty one
 // cannot be told from the spacing of a diagram or the rule between two columns
-// — 888 remain in the 事例 against 768 that carry a letter — so highlighting
+// — 805 remain in the 事例 against 886 that carry a letter — so highlighting
 // them all pointed the reader at the wrong thing more often than the right one.
 const ANCHOR = /[①-⑳]|［\s*([^］\s]{1,3})?\s*］/g;
 const UNDERLINE_REF = /下線\s*([①-⑳])/g;
@@ -186,7 +186,7 @@ export default async function renderQuizPm({ view, extra, go, ctx }) {
    *
    *  Brackets in the 事例 are not all 空欄: a listing prints argv［1］, a 設問
    *  quotes ［チョコ］ as a search term, and the scan cuts a particle out of a
-   *  line into ［を］. 133 of the 768 framed letters are one of those, and
+   *  line into ［を］. 133 of the 886 framed letters are one of those, and
    *  calling them 空欄 sends the reader looking in the wrong place.
    */
   function blanksOf(c) {

@@ -23,6 +23,7 @@ guessed at.
 """
 from __future__ import annotations
 import json, re, sys, unicodedata
+from collections import Counter
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sclib import (PDFTOOL, PM_PAPERS, build_dir, clean, pdf_path, pm_papers_of,
@@ -226,7 +227,25 @@ def column_edges(rows: list[dict]) -> list[float]:
     return edges
 
 
-def rows_of(page: dict, page_no: int, pending: list | None = None) -> list[dict]:
+# A 空欄 at the very start of a printed line has no fragment before it, so there
+# is no gap between two runs to find it by. What gives it away is the indent:
+# the line starts at a measure the page uses nowhere else and the line above it
+# runs the full width, so nothing but a frame can be holding it in. These are
+# inferred rather than seen, so unlike the others they only become a 空欄 when
+# the letter inside is read — an empty one would just be a guess.
+EDGE_MIN = 0.04
+INDENT_TOL = 0.012
+
+
+def indents(rows: list[dict]) -> list[float]:
+    """The left edges this page sets text at, as the ones it uses twice."""
+    seen = Counter(round(min(f["x"] for f in r["frags"]) / 0.005) * 0.005
+                   for r in rows)
+    return sorted(x for x, n in seen.items() if n >= 2)
+
+
+def rows_of(page: dict, page_no: int, pending: list | None = None,
+            edges: set | None = None) -> list[dict]:
     """OCR fragments regrouped into the lines a reader would see.
 
     Vision emits a run of text per box, so one printed line arrives in pieces
@@ -264,14 +283,45 @@ def rows_of(page: dict, page_no: int, pending: list | None = None) -> list[dict]
                 gaps.append({"i": i, "x": frags[i]["x"]})
         rows.append({"frags": frags, "gaps": gaps})
 
-    edges = column_edges(rows)
-    is_column = lambda x: any(abs(x - e) <= COLUMN_TOL for e in edges)
+    rules = column_edges(rows)
+    is_column = lambda x: any(abs(x - e) <= COLUMN_TOL for e in rules)
+    cols = indents(rows)
+    measure = max((max(f["x"] + f["w"] for f in r["frags"]) for r in rows),
+                  default=1.0)
 
     out: list[dict] = []
-    for r in rows:
+    for n_row, r in enumerate(rows):
         frags, boxed = r["frags"], {g["i"] for g in r["gaps"]}
         columns = {g["i"] for g in r["gaps"] if is_column(g["x"])}
         parts = []
+        # A frame holding the line in from the left, if the indent says so.
+        x0 = frags[0]["x"]
+        right = max(f["x"] + f["w"] for f in frags)
+        above = rows[n_row - 1]["frags"] if n_row else []
+        left = min((f["x"] for f in above), default=x0)
+        # A line set in the middle of the measure — a caption, a page number —
+        # is short at both ends because it is centred, not because a frame is
+        # holding it in from the left.
+        centred = abs((x0 - left) - (measure - right)) < 0.06
+        # Lines that open something of their own are set where they are for a
+        # reason, and a marker in front of them would hide what they open.
+        raw = "".join(f["text"] for f in frags).strip()
+        opens = (CAPTION.match(raw) or SETSU.match(raw) or SUB.match(raw)
+                 or CASE_HEAD.match(raw) or SECTION.match(raw))
+        if (pending is not None and edges is not None and n_row > 0
+                and not centred and not opens
+                and not any(abs(x0 - c) <= INDENT_TOL for c in cols)
+                and x0 - left >= EDGE_MIN
+                and max(f["x"] + f["w"] for f in above) >= measure - 0.02):
+            # The frame runs from where the line would have started — the left
+            # edge of the line above, which is in the same block — to where it
+            # actually does.
+            top = min(f["y"] for f in frags)
+            pending.append({"page": page_no, "x": left, "y": top,
+                            "w": x0 - left,
+                            "h": max(f["y"] + f["h"] for f in frags) - top})
+            edges.add(len(pending) - 1)
+            parts.append(f"{MARK_OPEN}{len(pending) - 1}{MARK_CLOSE}")
         just_boxed = False
         for i, f in enumerate(frags):
             body = f["text"].strip()
@@ -316,13 +366,14 @@ def rows_of(page: dict, page_no: int, pending: list | None = None) -> list[dict]
     return out
 
 
-def load_rows(sid: str, paper: str) -> tuple[list[dict], dict]:
+def load_rows(sid: str, paper: str) -> tuple[list[dict], dict, set]:
     path = build_dir("pm") / "ocr" / f"{sid}-{paper}.json"
     pages = json.loads(path.read_text(encoding="utf-8"))
     pending: list[dict] = []
+    edges: set[int] = set()
     rows: list[dict] = []
     for n, page in enumerate(pages, 1):
-        got = rows_of(page, n, pending)
+        got = rows_of(page, n, pending, edges)
         if (sum(1 for r in got if NOTICE.search(r["text"])) >= 2
                 and not any(is_setsu_head(r) for r in got)):
             continue                       # 注意事項のページ（表紙・裏表紙）
@@ -348,10 +399,10 @@ def load_rows(sid: str, paper: str) -> tuple[list[dict], dict]:
     # is known: which letters it can be naming is what tells a reading apart
     # from a misreading.
     read = dict(zip(frames, frame_text(pdf, [pending[i] for i in frames])))
-    return [r for r in rows if r["text"].strip()], read
+    return [r for r in rows if r["text"].strip()], read, edges & set(frames)
 
 
-def resolve_frames(rows: list[dict], read: dict, labels: set) -> None:
+def resolve_frames(rows: list[dict], read: dict, edges: set, labels: set) -> None:
     """Give each 空欄 frame the label it holds, where that is beyond doubt.
 
     A frame is read as up to three single characters, and the 解答例 says which
@@ -364,12 +415,16 @@ def resolve_frames(rows: list[dict], read: dict, labels: set) -> None:
     by = {norm_label(l): l for l in labels}
 
     def one(m: re.Match) -> str:
+        at = int(m.group(1))
         boxes = []
-        for alts in read.get(int(m.group(1)), []):
+        for alts in read.get(at, []):
             hits = [by[c] for c in alts if c in by]
             if len(hits) == 1:
                 boxes.append(f"［{hits[0]}］")
-        return "".join(boxes) if boxes else "［　］"
+        if boxes:
+            return "".join(boxes)
+        # A frame only the indent spoke for stands or falls on its letter.
+        return "" if at in edges else "［　］"
 
     for r in rows:
         r["text"] = PENDING.sub(one, r["text"])
@@ -618,11 +673,11 @@ def build_items(rows: list[dict]) -> list[dict]:
 
 
 def parse_paper(sid: str, paper: str, answers: dict | None = None) -> dict:
-    rows, read = load_rows(sid, paper)
+    rows, read, edges = load_rows(sid, paper)
     key = (answers or {}).get(sid, {}).get(paper, {})
     cases = {}
     for no, title, body_rows in split_cases(rows, PM_PAPERS[paper]["cases"]):
-        resolve_frames(body_rows, read,
+        resolve_frames(body_rows, read, edges,
                        {p["label"] for i in key.get(str(no), {}).get("items", [])
                         for p in i["parts"] if p["label"]})
         cut = next((i for i, r in enumerate(body_rows) if is_setsu_head(r)),
