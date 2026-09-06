@@ -43,8 +43,11 @@ MIN_H = 0.035
 # Text set to the full measure of the column is body copy, not a caption or a
 # label inside a drawing, which are indented by their frame.
 PROSE_W = 0.60
-# The tallest a 図 gets in these booklets, as a fraction of the page.
-MAX_FIG_H = 0.62
+# The tallest a 図 gets in these booklets, as a fraction of the page. Measured
+# too tight at first: 図9 of 令7春 問3 is 0.65 of its page and was cropped with
+# its own lane labels cut off, which stage 14 then printed as body text because
+# they were not in the picture.
+MAX_FIG_H = 0.70
 
 
 def is_prose(row: dict) -> bool:

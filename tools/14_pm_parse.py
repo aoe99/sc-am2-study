@@ -543,6 +543,60 @@ def drop_layout_boxes(text: str) -> str:
     return EMPTY_BOX.sub(" ", text) if len(EMPTY_BOX.findall(text)) >= 2 else text
 
 
+# Body copy runs the full measure and wraps; a drawing's labels and a table's
+# cells stop where their frame does.
+PROSE_W = 0.60
+# Running text starts at the margin or one indent in. A drawing puts its labels
+# wherever its frame does, which is anywhere else.
+PROSE_INDENTS = (0.0, 0.02)
+INDENT_EPS = 0.012
+# The end of a sentence. A line at the margin that stops short of the measure
+# is either the last line of a paragraph or a label inside a drawing; the full
+# stop is what tells them apart.
+SENTENCE_END = re.compile(r"[。．]\s*$")
+
+
+def is_prose(row: dict) -> bool:
+    """Body copy: it wrapped across lines *and* runs the full column width."""
+    return row.get("lines", 1) > 1 and row.get("w", 0) > PROSE_W
+
+
+def mark_drawings(body: list[dict], base: float) -> None:
+    """Set "figure" on the rows a 図 or 表 prints inside itself.
+
+    Stage 15 crops the drawing and the app shows the picture, so those rows
+    would otherwise be printed a second time — as fragments in reading order,
+    beside the drawing they were read from. 令7春 問3 の 図9 is a page of
+    "a を送" / "→" / "（5） 9" set next to the picture that already says it.
+
+    The state machine above opens a drawing on a caption or on column gaps, and
+    both can be missed: a 図's caption is printed *below* it, and gaps that the
+    frame pass has not resolved yet do not look like gaps. So the run is taken
+    again from each caption, outwards, and stops at the first row that is set
+    like running text — at the margin, or wrapped across the full measure.
+    """
+    for i, row in enumerate(body):
+        if row["kind"] != "caption" or not CAPTION.match(row["text"]):
+            continue
+        # 表 captions sit above their table, 図 captions below their figure.
+        step = 1 if row["text"][0] == "表" else -1
+        j = i + step
+        while 0 <= j < len(body):
+            b = body[j]
+            if b["page"] != row["page"] or b["kind"] in ("heading", "caption"):
+                break
+            at_margin = any(abs(b["x"] - base - d) <= INDENT_EPS
+                            for d in PROSE_INDENTS)
+            # Starting at the margin is not enough on its own: a drawing's rows
+            # wrap back to it too ("ハンズ、［ ］（2） Encrypted Extensions" in
+            # 図9). Running text either fills the measure or ends a sentence.
+            if is_prose(b) or (at_margin and (b["w"] > PROSE_W
+                                              or SENTENCE_END.search(b["text"]))):
+                break
+            b["kind"] = "figure"
+            j += step
+
+
 def build_body(rows: list[dict]) -> list[dict]:
     """Prose, headings and captions, with everything inside a 図/表 set apart.
 
@@ -582,7 +636,11 @@ def build_body(rows: list[dict]) -> list[dict]:
         elif indented or x > base + 0.045:
             kind = "para"
         elif (out and out[-1]["kind"] == "para"
-              and out[-1]["page"] == r["page"]):
+              and out[-1]["page"] == r["page"]
+              # ...and that paragraph is one. A "paragraph" that began well
+              # right of the text margin is a drawing's label, and the line at
+              # the margin under it is the drawing's 注記, not its continuation.
+              and out[-1]["x"] <= base + 0.045):
             # Not across a page break. A paragraph does continue over one, but
             # merging there throws away the geometry of everything on the new
             # page, and stage 15 needs it: 図4 of 令7秋 問2 is printed at the top
@@ -612,8 +670,10 @@ def build_body(rows: list[dict]) -> list[dict]:
     # Corrections are applied per row as it is read, but a pattern that straddles
     # a line break ("施" ending one line, "弱" opening the next) only becomes
     # visible once the paragraph is joined.
-    return [dict(b, text=drop_layout_boxes(fix(clean(b["text"]))))
+    body = [dict(b, text=drop_layout_boxes(fix(clean(b["text"]))))
             for b in out if clean(b["text"])]
+    mark_drawings(body, base)
+    return body
 
 
 # A 解答群 is printed as a lettered list, often in two or three columns, and it
