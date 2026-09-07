@@ -473,16 +473,26 @@ def resolve_frames(rows: list[dict], read: dict, edges: set, labels: set) -> Non
 
     def one(m: re.Match) -> str:
         at = int(m.group(1))
-        boxes = []
-        for alts in read.get(at, []):
+        runs = read.get(at, [])
+        boxes, other = [], []
+        for alts in runs:
             hits = [by[c] for c in alts if c in by]
             if len(hits) == 1:
                 boxes.append(f"［{hits[0]}］")
-        # A frame only the measure spoke for stands or falls on its letter, and
-        # on there being just the one: two readings in a gap nothing was seen in
-        # means the crop caught the text beside it.
+            else:
+                other.append(min(alts, key=len) if alts else "")
+        # A frame only the measure spoke for stands or falls on what is in it.
         if at in edges:
-            return boxes[0] if len(boxes) == 1 else ""
+            if len(boxes) == 1:
+                return boxes[0]
+            # Two is usually the crop catching the prose beside it — but a line
+            # can open with a pair: 令7春 問2 sets "，［f］や［g］だった。" and the
+            # scan lost the whole run, frames and connector alike. That case has
+            # nothing in the rect but the labels and a one-character connector.
+            if (len(boxes) >= 2 and len(set(boxes)) == len(boxes)
+                    and len(runs) <= 4 and all(len(o) <= 2 for o in other)):
+                return "".join(boxes)
+            return ""
         return "".join(boxes) if boxes else "［　］"
 
     for r in rows:
