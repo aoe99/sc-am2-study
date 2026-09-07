@@ -359,8 +359,15 @@ def rows_of(page: dict, page_no: int, pending: list | None = None,
         just_boxed = False
         tail = None
         nxt = rows[n_row + 1] if n_row + 1 < len(rows) else None
+        nxt_cols = ({g["i"] for g in nxt["gaps"] if is_column(g["x"])}
+                    if nxt else set())
+        # Prose, but a line of prose may still carry a 空欄 of its own: 平30春
+        # 午後I 問1 sets "アドレス［c］番地に値［d］を" and the scan lost the tail
+        # from ［d］ on, so the row has one gap and still stops short. What must
+        # not be there is a *column rule* — that is a table, and a table's cells
+        # end where they end.
         if (pending is not None and edges is not None and nxt
-                and not r["gaps"] and not nxt["gaps"]
+                and not columns and not nxt_cols
                 and abs(x0 - base) <= INDENT_TOL
                 and abs(min(f["x"] for f in nxt["frags"]) - base) <= INDENT_TOL
                 and measure - right >= EDGE_MIN
@@ -571,6 +578,27 @@ def is_prose(row: dict) -> bool:
     return row.get("lines", 1) > 1 and row.get("w", 0) > PROSE_W
 
 
+# Telling running text from a drawing's labels by where the line starts only
+# works when the 事例 has one margin, and plenty have three: 平30春 午後I 問1 sets
+# its C++ listing at 0.115, its paragraphs at 0.15 and the continuation lines of
+# its 会話 at 0.23, and the most common of those is not the text margin. So the
+# line is read instead of measured. A drawing's labels come back with the gaps
+# between their cells still in them; Japanese running text is set solid, and the
+# only spaces in it are the ones around Latin words.
+INNER_GAP = re.compile(r"(?<![0-9A-Za-z（(）)])\s(?![0-9A-Za-z（(）)])|\s{2,}")
+JA_CHAR = re.compile(r"[ぁ-んァ-ヶ一-鿿]")
+PROSE_MIN_LEN = 12
+PROSE_MIN_JA = 8
+
+
+def looks_prose(text: str) -> bool:
+    """Running text — no cell gaps, and long enough to be a sentence."""
+    text = text.strip()
+    if len(text) < PROSE_MIN_LEN or INNER_GAP.search(text):
+        return False
+    return len(JA_CHAR.findall(text)) >= PROSE_MIN_JA
+
+
 def mark_drawings(body: list[dict], base: float) -> None:
     """Set "figure" on the rows a 図 or 表 prints inside itself.
 
@@ -594,6 +622,8 @@ def mark_drawings(body: list[dict], base: float) -> None:
         while 0 <= j < len(body):
             b = body[j]
             if b["page"] != row["page"] or b["kind"] in ("heading", "caption"):
+                break
+            if looks_prose(b["text"]):
                 break
             at_margin = any(abs(b["x"] - base - d) <= INDENT_EPS
                             for d in PROSE_INDENTS)
@@ -682,6 +712,13 @@ def build_body(rows: list[dict]) -> list[dict]:
     # visible once the paragraph is joined.
     body = [dict(b, text=drop_layout_boxes(fix(clean(b["text"]))))
             for b in out if clean(b["text"])]
+    # The state machine above decides from the left edge, so a 事例 with more
+    # than one margin has whole paragraphs filed as drawing. 平30春 午後I 問1 lost
+    # 140 of its 155 rows that way — the entire T主任/Uさん conversation was
+    # replaced by the pictures beside it. Read the line to put those back.
+    for b in body:
+        if b["kind"] == "figure" and looks_prose(b["text"]):
+            b["kind"] = "para"
     mark_drawings(body, base)
     return body
 
