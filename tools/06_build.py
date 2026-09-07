@@ -761,8 +761,36 @@ def pm_vote_terms(cases: list[dict], questions: list[dict]) -> list[tuple]:
     return fixed
 
 
+# The page number is printed on its own line at the foot of every page, and a
+# 設問 that runs to the bottom of one takes it along: "70字以内で述べよ。 - 12 =".
+# The rule has to want the rule — a bare number is a 字数 or a 項番, and 解答群
+# option "ケ SHA-512" is a hyphen with a number after it. So a dash-like glyph
+# has to sit against the digits, and what comes before has to be a break rather
+# than a letter.
+PM_PAGE = r"[-–—ー−ｰ―=＝~〜_]"
+PM_PAGE_TAIL = re.compile(
+    rf"(?:(?<=[\s。．）)」』])|^)(?:{PM_PAGE}{{1,2}}\s*\d{{1,3}}\s*{PM_PAGE}{{0,2}}"
+    rf"|\d{{1,3}}\s*{PM_PAGE}{{1,2}})\s*$")
+PM_PAGE_ROW = re.compile(
+    rf"^\s*(?:{PM_PAGE}{{1,2}}\s*\d{{1,3}}\s*{PM_PAGE}{{0,2}}"
+    rf"|\d{{1,3}}\s*{PM_PAGE}{{1,2}})\s*$")
+
+
+def pm_drop_page_no(text: str) -> str:
+    """Drop the foot-of-page number a 設問 picked up at a page break."""
+    lines = [l for l in text.split("\n") if not PM_PAGE_ROW.match(l)]
+    out = "\n".join(lines).rstrip()
+    for _ in range(3):
+        cut = PM_PAGE_TAIL.sub("", out).rstrip()
+        if cut == out:
+            break
+        out = cut
+    return out
+
+
 def pm_wording(text: str, parts: list[dict]) -> str:
     """A 設問文 with its 空欄 put back the way the 解答例 names them."""
+    text = pm_drop_page_no(text)
     text = pm_drop_double_close(PM_TWICE.sub("］", PM_TAIL_KO.sub("", text)))
     text = pm_join_split_box(pm_quoted_label(text, parts), parts)
     text = pm_wording_labels(text, parts)
@@ -834,8 +862,10 @@ def build_pm(targets: list[str]) -> tuple[list, list, list]:
                     "intent": key.get("intent", ""),
                     "overview": cm.get("overall", ""),
                     "overviewRate": cm.get("overallRate"),
+                    # The foot-of-page number is not part of the 事例.
                     "body": [{"kind": b["kind"], "text": b["text"], "page": b["page"]}
-                             for b in body["body"]],
+                             for b in body["body"]
+                             if not PM_PAGE_ROW.match(b["text"])],
                     # What ［…］ in this 事例 is a 空欄 rather than something the
                     # booklet really prints in brackets: "argv［1］" in a listing,
                     # "［チョコ］" as a search term, a particle the scan cut out of
