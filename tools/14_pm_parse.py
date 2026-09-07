@@ -132,7 +132,17 @@ FIXES = [(re.compile(r["pattern"], re.M), r["repl"]) for r in CORR["replacements
 DOUBLE_BOX = re.compile(r"(?:［\s*］\s*){2,}")
 
 
+# IPA typesets 読点 as "，"; Vision reads most of them as "、".  What settles it
+# is that the 解答例 and 採点講評 PDFs of these same booklets have a text layer —
+# no OCR — and use "，" 1,604 times and "、" not once.  tesseract independently
+# reads them as comma glyphs too.  04_parse does the same for 午前, where the
+# corpus now has no "、" at all; the 午後 path never picked it up.  The 教科書解説
+# is 翔泳社's own text layer and genuinely mixes both, so it is left alone.
+PUNCT = str.maketrans({"、": "，", "､": "，", "｡": "。"})
+
+
 def fix(s: str) -> str:
+    s = s.translate(PUNCT)
     for rx, repl in FIXES:
         s = rx.sub(repl, s)
     return DOUBLE_BOX.sub("［　］", s)

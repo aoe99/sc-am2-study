@@ -12,6 +12,7 @@ ten pages of scenario above it.
 """
 from __future__ import annotations
 import datetime as dt, json, re, sys, unicodedata
+from collections import Counter
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sclib import (SESSIONS, SESSION_IDS, SECTIONS, CHOICE_KEYS, PM_PAPERS, ROOT,
@@ -673,6 +674,93 @@ def pm_reorder_markers(body: list[dict], asked: set) -> None:
         seq[hits[0]] = want
 
 
+# A 事例 says the same words over and over — 平30秋 午後II 問1 prints サーバ 132
+# times — so a katakana word that turns up once, and differs from a common one
+# in that same 事例 by a single character, is the scan misreading that word and
+# not a word of its own.  サーノ, サニバ, リーバ, ナーバ are all サーバ.
+#
+# The danger is the opposite case: a real word that happens to sit one character
+# from a common one.  化学メーカ is not メール, DNS シンクホール is not ツール,
+# キーボード入力 is not モード.  Four conditions keep those out.
+KATA_WORD = re.compile(r"[ァ-ヶ][ァ-ヶー]{2,}")
+VOTE_IN_CASE = 2      # times the odd spelling may appear in its own 事例
+VOTE_IN_PM = 5        # times it may appear across the whole 午後 corpus
+VOTE_RATIO = 10       # how much oftener the common spelling has to appear
+
+
+def text_layer() -> str:
+    """Every 午後 word that reached us without going through OCR.
+
+    The 教科書解説 of both 区分, IPA's own 解答例 and the 採点講評 all have a text
+    layer — 60万字 of this exact vocabulary, spelled correctly by construction.
+    A katakana run that appears nowhere in it is not a word of the domain.
+    """
+    out = []
+    for sec in ("pm", "am1", "am2"):
+        path = build_dir(sec) / "explanations.json"
+        if path.exists():
+            out.append(json.dumps(read_json(path), ensure_ascii=False))
+    for name in ("commentary.json", "answers.json"):
+        path = build_dir("pm") / name
+        if path.exists():
+            out.append(json.dumps(read_json(path), ensure_ascii=False))
+    return "".join(out)
+
+
+def pm_vote_terms(cases: list[dict], questions: list[dict]) -> list[tuple]:
+    """Correct a katakana word against the way its own 事例 spells it."""
+    lex = text_layer()
+    said: dict[str, list[str]] = {}
+    for c in cases:
+        said[c["id"]] = [b["text"] for b in c["body"]]
+    for q in questions:
+        if q.get("section") == "pm" and q.get("text"):
+            said.setdefault(q["caseId"], []).append(q["text"])
+    corpus = Counter(w for parts in said.values()
+                     for s in parts for w in KATA_WORD.findall(s))
+
+    fixed = []
+    for cid, parts in said.items():
+        here = Counter(w for s in parts for w in KATA_WORD.findall(s))
+        words = list(here)
+        cand: dict[str, set] = {}
+        for i, a in enumerate(words):
+            for b in words[i + 1:]:
+                if len(a) != len(b) or sum(x != y for x, y in zip(a, b)) != 1:
+                    continue
+                odd, common = (a, b) if here[a] < here[b] else (b, a)
+                if (here[odd] > VOTE_IN_CASE or corpus[odd] > VOTE_IN_PM
+                        or here[common] < here[odd] * VOTE_RATIO):
+                    continue
+                if odd in lex:
+                    continue          # a real word, however rare here
+                # ファイア is the head of ファイアウォール, not a misread ファイル.
+                if any(w != odd and odd in w and corpus[w] >= 3 for w in corpus):
+                    continue
+                cand.setdefault(odd, set()).add(common)
+        for odd, commons in cand.items():
+            # シンクホール sits one character from both メール and ツール. When the
+            # 事例 offers two answers it has not told us which, so leave it.
+            if len(commons) != 1:
+                continue
+            common = commons.pop()
+            n = 0
+            for c in cases:
+                if c["id"] != cid:
+                    continue
+                for b in c["body"]:
+                    if odd in b["text"]:
+                        b["text"] = b["text"].replace(odd, common)
+                        n += 1
+            for q in questions:
+                if q.get("caseId") == cid and q.get("text") and odd in q["text"]:
+                    q["text"] = q["text"].replace(odd, common)
+                    n += 1
+            if n:
+                fixed.append((cid, odd, common, n))
+    return fixed
+
+
 def pm_wording(text: str, parts: list[dict]) -> str:
     """A 設問文 with its 空欄 put back the way the 解答例 names them."""
     text = pm_drop_double_close(PM_TWICE.sub("］", PM_TAIL_KO.sub("", text)))
@@ -815,6 +903,10 @@ def build_pm(targets: list[str]) -> tuple[list, list, list]:
                     })
                     if inotes:
                         review.append((qid, inotes, None))
+    voted = pm_vote_terms(cases, questions)
+    if voted:
+        print(f"  事例の多数決で直したカタカナ語 {len(voted)} 語 / "
+              f"{sum(v[3] for v in voted)} 箇所")
     return cases, questions, review
 
 
