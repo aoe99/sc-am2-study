@@ -680,6 +680,14 @@ def mark_drawings(body: list[dict], base: float) -> None:
             j += step
 
 
+# Prose that opens with a 図N puts a particle straight after the number; a
+# caption goes on into the noun it names. "図1の設定では，" against
+# "図1 クラウドサービス利用に関するQ社のセキュリティガイドライン（抜粋）".
+CAPTION_PROSE = re.compile(
+    r"^[図表]\s*[0-9０-９]{1,2}\s*"
+    r"(?:[のはがをにでともやへ]|中|から|より|及び|並びに|に示|のよう)")
+
+
 def build_body(rows: list[dict]) -> list[dict]:
     """Prose, headings and captions, with everything inside a 図/表 set apart.
 
@@ -700,9 +708,15 @@ def build_body(rows: list[dict]) -> list[dict]:
         # A caption sits in from both margins. Being well in from the left is
         # enough on its own; a long one that only just clears the indent — 表4 of
         # 平29秋 問1 starts 0.037 in — is told from prose by its right-hand end.
+        # A long caption runs nearly to the measure, so the indent test misses
+        # it — 令1秋 問1 の 図4 and 11 others were filed as prose and never
+        # cropped. The wording is what does not change: a caption names a thing,
+        # and it does not end in a full stop.
         caption = bool(CAPTION.match(text)) and (
             x > base + 0.04
-            or (x > base + 0.02 and x + r.get("w", 0) < measure - 0.04))
+            or (x > base + 0.02 and x + r.get("w", 0) < measure - 0.04)
+            or (not CAPTION_PROSE.match(text)
+                and not text.rstrip().endswith(("。", "．"))))
         opens = caption or bool(COLUMNS.match(text))
         indented = base + 0.012 <= x <= base + 0.045
         if opens:

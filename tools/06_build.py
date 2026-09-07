@@ -847,6 +847,17 @@ def pm_drawing_rows(body: list[dict], regions: list[dict]) -> set:
             pend = []
             out.add(j)
             j += step
+    # The walk follows the caption, but a drawing's rows do not always reach it
+    # in one unbroken run — a page break, a 注記 set as prose, a row the state
+    # machine called something else. Any fragment that lies inside the picture
+    # is in the picture, whether the walk got to it or not, and printing it
+    # again beside the drawing is the thing this is here to stop.
+    prose = pm_figures.pm_parse.looks_prose
+    for i, row in enumerate(body):
+        if i in out or row["kind"] in ("caption", "heading") or prose(row["text"]):
+            continue
+        if any(_in_rect(row, r["page"], r["rect"]) for r in regions):
+            out.add(i)
     return out
 
 

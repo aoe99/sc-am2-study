@@ -125,7 +125,9 @@ export default async function renderQuizPm({ view, extra, go, ctx }) {
     const body = c.body || [];
     // 表 captions print above their table and 図 captions below their figure,
     // so the fragments a crop replaces can lie on either side of it.
-    const hidden = new Set();
+    // A row inside a drawing's crop is in the picture; showing it as text says
+    // the same thing twice, in reading order, unreadably.
+    const hidden = new Set(body.flatMap((b, i) => (b.drawn ? [i] : [])));
     // 下線① is often inside a 表, and that table is shown as its crop rather
     // than as its cell fragments. The marker then has nowhere to scroll to even
     // though the printed underline is right there in the picture — so the crop
@@ -140,7 +142,6 @@ export default async function renderQuizPm({ view, extra, go, ctx }) {
       // unbroken from its caption — up for a 図, down for a 表.
       const step = b.text.startsWith('表') ? 1 : -1;
       for (let j = i + step; j >= 0 && j < body.length && body[j].drawn; j += step) {
-        hidden.add(j);
         for (const m of body[j].text.matchAll(ANCHOR)) {
           if (m[1]) { if (blank.has(m[1])) blanks.add(m[1]); }
           else if (!m[0].startsWith('［')) marks.add(m[0]);
@@ -172,9 +173,11 @@ export default async function renderQuizPm({ view, extra, go, ctx }) {
         // be reached — the reader lands on its fragments rather than nowhere.
         if (label && !fig) cap.dataset.fig = label;
         box.append(cap);
-      } else if (b.kind === 'figure' || b.drawn) {
-        if (!hidden.has(i))
-          box.append(marked(b.text, el('pre', { class: 'figtext' }), blank));
+      } else if (!b.drawn) {
+        // What is left of a drawing that the crop did not reach is set like the
+        // rest of the 事例. Its own indent in the middle of a paragraph reads as
+        // a mistake, and it is not one the reader can do anything with.
+        box.append(marked(b.text, el('p', {}), blank));
       } else {
         box.append(marked(b.text, el('p', {}), blank));
       }
