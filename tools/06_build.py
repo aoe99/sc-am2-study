@@ -775,13 +775,13 @@ def pm_vote_terms(cases: list[dict], questions: list[dict]) -> list[tuple]:
 # option "ケ SHA-512" is a hyphen with a number after it. So a dash-like glyph
 # has to sit against the digits, and what comes before has to be a break rather
 # than a letter.
-PM_PAGE = r"[-–—ー−ｰ―=＝~〜_]"
+PM_PAGE = r"[-–—ー−ｰ―－‐‑‒=＝~〜_]"
 PM_PAGE_TAIL = re.compile(
     rf"(?:(?<=[\s。．）)」』])|^)(?:{PM_PAGE}{{1,2}}\s*\d{{1,3}}\s*{PM_PAGE}{{0,2}}"
-    rf"|\d{{1,3}}\s*{PM_PAGE}{{1,2}})\s*$")
+    rf"|\d{{1,3}}\s*{PM_PAGE}{{1,2}})[.．]?\s*$")
 PM_PAGE_ROW = re.compile(
     rf"^\s*(?:{PM_PAGE}{{1,2}}\s*\d{{1,3}}\s*{PM_PAGE}{{0,2}}"
-    rf"|\d{{1,3}}\s*{PM_PAGE}{{1,2}})\s*$")
+    rf"|\d{{1,3}}\s*{PM_PAGE}{{1,2}})[.．]?\s*$")
 
 
 def pm_drop_page_no(text: str) -> str:

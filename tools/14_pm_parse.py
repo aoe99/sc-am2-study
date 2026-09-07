@@ -459,6 +459,15 @@ def load_rows(sid: str, paper: str) -> tuple[list[dict], dict, set]:
     return [r for r in rows if r["text"].strip()], read, edges & set(frames)
 
 
+# The letter in a frame is set at half the size of the body text, and at 200dpi
+# 1/l/i, 9/g, 6/b, 0/o and 5/s are the same handful of pixels. Reading digits as
+# letters everywhere costs more than it gains — measured at 97%→96% — so it is
+# done only for a label the 大問 asks for and the 事例 does not have anywhere
+# else, and only when the digit is the *first* reading and just one letter fits.
+DIGIT_LOOKS = {"1": "li", "9": "g", "6": "b", "0": "o", "5": "s"}
+BOXED_LETTER = re.compile(r"［([^］\s])］")
+
+
 def resolve_frames(rows: list[dict], read: dict, edges: set, labels: set) -> None:
     """Give each 空欄 frame the label it holds, where that is beyond doubt.
 
@@ -495,8 +504,32 @@ def resolve_frames(rows: list[dict], read: dict, edges: set, labels: set) -> Non
             return ""
         return "".join(boxes) if boxes else "［　］"
 
+    # What the ordinary reading finds, counting the letters the page scan itself
+    # got. A fold is only ever allowed to supply a label that is nowhere else.
+    found = set(BOXED_LETTER.findall("\n".join(r["text"] for r in rows)))
     for r in rows:
-        r["text"] = PENDING.sub(one, r["text"])
+        for m in PENDING.finditer(r["text"]):
+            found.update(BOXED_LETTER.findall(one(m)))
+    missing = {l for l in labels if len(l) == 1 and l not in found}
+
+    def sub(m: re.Match) -> str:
+        got = one(m)
+        if got not in ("", "［　］") or not missing:
+            return got
+        at = int(m.group(1))
+        runs = read.get(at, [])
+        if len(runs) != 1 or not runs[0] or any(c in by for c in runs[0]):
+            return got
+        hits = {by[t] for t in DIGIT_LOOKS.get(runs[0][0], "")
+                if t in by and by[t] in missing}
+        if len(hits) != 1:
+            return got
+        lab = hits.pop()
+        missing.discard(lab)
+        return f"［{lab}］"
+
+    for r in rows:
+        r["text"] = PENDING.sub(sub, r["text"])
 
 
 def join_wrapped_heads(rows: list[dict]) -> list[dict]:
