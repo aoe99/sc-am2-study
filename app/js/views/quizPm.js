@@ -136,14 +136,14 @@ export default async function renderQuizPm({ view, extra, go, ctx }) {
       if (b.kind !== 'caption' || !byCaption.has(b.text)) return;
       const marks = new Set();
       const blanks = new Set();
-      for (const step of [1, -1]) {
-        for (let j = i + step; j >= 0 && j < body.length; j += step) {
-          if (body[j].kind !== 'figure') break;
-          hidden.add(j);
-          for (const m of body[j].text.matchAll(ANCHOR)) {
-            if (m[1]) { if (blank.has(m[1])) blanks.add(m[1]); }
-            else if (!m[0].startsWith('［')) marks.add(m[0]);
-          }
+      // Stage 6 marks the rows that are inside this drawing's crop, and they run
+      // unbroken from its caption — up for a 図, down for a 表.
+      const step = b.text.startsWith('表') ? 1 : -1;
+      for (let j = i + step; j >= 0 && j < body.length && body[j].drawn; j += step) {
+        hidden.add(j);
+        for (const m of body[j].text.matchAll(ANCHOR)) {
+          if (m[1]) { if (blank.has(m[1])) blanks.add(m[1]); }
+          else if (!m[0].startsWith('［')) marks.add(m[0]);
         }
       }
       figMarks.set(i, marks);
@@ -172,7 +172,7 @@ export default async function renderQuizPm({ view, extra, go, ctx }) {
         // be reached — the reader lands on its fragments rather than nowhere.
         if (label && !fig) cap.dataset.fig = label;
         box.append(cap);
-      } else if (b.kind === 'figure') {
+      } else if (b.kind === 'figure' || b.drawn) {
         if (!hidden.has(i))
           box.append(marked(b.text, el('pre', { class: 'figtext' }), blank));
       } else {

@@ -18,6 +18,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sclib import (SESSIONS, SESSION_IDS, SECTIONS, CHOICE_KEYS, PM_PAPERS, ROOT,
                    DATA, BUILD, build_dir, clean, exam_name, pdf_path,
                    pm_papers_of, read_json, write_json)
+import importlib.util as _ilu
+
+_spec = _ilu.spec_from_file_location(
+    "pm_figures", Path(__file__).resolve().parent / "15_pm_figures.py")
+pm_figures = _ilu.module_from_spec(_spec)
+_argv, sys.argv = sys.argv, ["15_pm_figures.py"]
+_spec.loader.exec_module(pm_figures)
+sys.argv = _argv
 import statistics
 
 SCHEMA_VERSION = 1
@@ -788,6 +796,60 @@ def pm_drop_page_no(text: str) -> str:
     return out
 
 
+# The rows a 図/表 crop replaces. The app shows the picture, so printing these
+# again beside it says everything twice — and a table read in reading order is
+# unreadable ("フェーズ32さんとB社での診断A 社グループである…").
+#
+# Three things decide it. The run goes in the caption's own direction (a 表
+# caption sits above its table, a 図 caption below its figure). It stops at a
+# row that is not inside the picture, because a row that is not in the crop
+# would vanish altogether. And it survives a single row that reads like prose,
+# because a table row whose cells the scan ran together looks exactly like one —
+# two in a row end it, which is what keeps the sentence that introduces a 図
+# from being swallowed.
+DRAW_PAD = 0.004
+DRAW_SKIP = 1
+
+
+def _in_rect(row: dict, page: int, rect: list) -> bool:
+    x, y, w, h = rect
+    return (row["page"] == page
+            and x <= row["x"] + DRAW_PAD
+            and row["x"] + row.get("w", 0) <= x + w + DRAW_PAD
+            and y <= row["y"] + DRAW_PAD
+            and row["y"] + row.get("h", 0) <= y + h + DRAW_PAD)
+
+
+def pm_drawing_rows(body: list[dict], regions: list[dict]) -> set:
+    by_caption = {r["caption"]: r for r in regions}
+    out: set = set()
+    for i, row in enumerate(body):
+        if row["kind"] != "caption":
+            continue
+        reg = by_caption.get(row["text"])
+        if not reg:
+            continue
+        step = 1 if row["text"].startswith("表") else -1
+        pend: list = []
+        j = i + step
+        while 0 <= j < len(body):
+            b = body[j]
+            if (b["kind"] in ("heading", "caption")
+                    or not _in_rect(b, reg["page"], reg["rect"])):
+                break
+            if b["kind"] != "figure":
+                pend.append(j)
+                if len(pend) > DRAW_SKIP:
+                    break
+                j += step
+                continue
+            out.update(pend)
+            pend = []
+            out.add(j)
+            j += step
+    return out
+
+
 def pm_wording(text: str, parts: list[dict]) -> str:
     """A 設問文 with its 空欄 put back the way the 解答例 names them."""
     text = pm_drop_page_no(text)
@@ -818,6 +880,7 @@ def build_pm(targets: list[str]) -> tuple[list, list, list]:
                 ex = expl.get(sid, {}).get(paper, {}).get(no_s, {})
                 cm = comm.get(sid, {}).get(paper, {}).get(no_s, {})
                 fg = figs.get(sid, {}).get(paper, {}).get(no_s, {})
+                drawn = pm_drawing_rows(body["body"], pm_figures.regions(body["body"]))
                 case_id = f"{sid}-{paper}-{no}"
                 asked = set(re.findall(
                     r"下線\s*([①-⑳])",
@@ -863,8 +926,10 @@ def build_pm(targets: list[str]) -> tuple[list, list, list]:
                     "overview": cm.get("overall", ""),
                     "overviewRate": cm.get("overallRate"),
                     # The foot-of-page number is not part of the 事例.
-                    "body": [{"kind": b["kind"], "text": b["text"], "page": b["page"]}
-                             for b in body["body"]
+                    "body": [dict({"kind": b["kind"], "text": b["text"],
+                                   "page": b["page"]},
+                                  **({"drawn": True} if n in drawn else {}))
+                             for n, b in enumerate(body["body"])
                              if not PM_PAGE_ROW.match(b["text"])],
                     # What ［…］ in this 事例 is a 空欄 rather than something the
                     # booklet really prints in brackets: "argv［1］" in a listing,
