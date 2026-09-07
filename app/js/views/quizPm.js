@@ -512,7 +512,10 @@ export default async function renderQuizPm({ view, extra, go, ctx }) {
     }
 
     if (q.explanation) {
-      box.append(el('details', { class: 'explain-fold' },
+      // Open. Answering is the point of pressing 解答例と照らす, and the 解説 is
+      // the part that says why — folding it away puts a click between the
+      // reader and the thing they came for.
+      box.append(el('details', { class: 'explain-fold', open: true },
         el('summary', { text: `解説（設問${q.setsu}）` }),
         el('div', { class: 'explain' }, ...paras(q.explanation),
           el('div', { class: 'src', text: '出典: ' + (q.explanationSource || '教科書解説') }))));
