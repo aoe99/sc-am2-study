@@ -861,6 +861,27 @@ def pm_drawing_rows(body: list[dict], regions: list[dict]) -> set:
     return out
 
 
+# 空欄のうち、規則では届かなかったものをページ画像で確かめて置いた表。事例ごとに
+# 本文の文字列を置き換える。find が事例の中にちょうど1回無ければ報告する — 抽出が
+# 変わって当たらなくなった修正が黙って消えるのを防ぐ。
+BLANK_FIXES = read_json(Path(__file__).resolve().parent / "pm_blanks.json")["fixes"]
+
+
+def pm_apply_blank_fixes(case_id: str, body: list[dict]) -> list[str]:
+    notes = []
+    for fix in BLANK_FIXES:
+        if fix["case"] != case_id:
+            continue
+        hits = [i for i, b in enumerate(body) if fix["find"] in b["text"]]
+        n = sum(b["text"].count(fix["find"]) for b in body)
+        if n != 1:
+            notes.append(f"pm_blanks: ［{fix['label']}］ の find が {n} 箇所")
+            continue
+        i = hits[0]
+        body[i]["text"] = body[i]["text"].replace(fix["find"], fix["repl"])
+    return notes
+
+
 def pm_wording(text: str, parts: list[dict]) -> str:
     """A 設問文 with its 空欄 put back the way the 解答例 names them."""
     text = pm_drop_page_no(text)
@@ -891,8 +912,8 @@ def build_pm(targets: list[str]) -> tuple[list, list, list]:
                 ex = expl.get(sid, {}).get(paper, {}).get(no_s, {})
                 cm = comm.get(sid, {}).get(paper, {}).get(no_s, {})
                 fg = figs.get(sid, {}).get(paper, {}).get(no_s, {})
-                drawn = pm_drawing_rows(body["body"], pm_figures.regions(body["body"]))
                 case_id = f"{sid}-{paper}-{no}"
+                drawn = pm_drawing_rows(body["body"], pm_figures.regions(body["body"]))
                 asked = set(re.findall(
                     r"下線\s*([①-⑳])",
                     " ".join(i.get("text", "") + " " + (i.get("lead") or "")
@@ -916,6 +937,8 @@ def build_pm(targets: list[str]) -> tuple[list, list, list]:
                         if PM_IN_PROSE.search(wording):
                             prose.add(part["label"])
                 pm_place_missing_blank(body["body"], order, prose)
+                # Last, so the table reads against the text as it ends up.
+                fix_notes = pm_apply_blank_fixes(case_id, body["body"])
                 prose = "\n".join(b["text"] for b in body["body"]
                                    if b["kind"] in ("para", "heading"))
                 # 翔泳社 is the only one of the four PDFs that names the 事例;
@@ -930,6 +953,7 @@ def build_pm(targets: list[str]) -> tuple[list, list, list]:
                 # kana, ロ/口 and the rest. 午後 is 879 scanned pages of prose, so
                 # it needs the review list at least as much.
                 notes += [label for rx, label in SUSPECT if rx.search(prose)]
+                notes += fix_notes
                 cases.append({
                     "id": case_id, "sessionId": sid, "section": "pm",
                     "paper": paper, "no": no, "title": title,
