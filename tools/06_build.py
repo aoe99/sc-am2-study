@@ -852,12 +852,23 @@ def pm_drawing_rows(body: list[dict], regions: list[dict]) -> set:
     # machine called something else. Any fragment that lies inside the picture
     # is in the picture, whether the walk got to it or not, and printing it
     # again beside the drawing is the thing this is here to stop.
+    # A 表 is cells, never running text: its caption sits above it and the crop
+    # walk stops at the first line of prose under it, so everything inside the
+    # rectangle is table. Read in reading order those cells are unreadable —
+    # "機器名 ［ ］ 概要 / 内部 DNS・DNS コンテンツ機能 / サーバ ［ ］ - 社内専用の
+    # ドメイン名を管理する。" — so they go, however sentence-like a cell looks.
+    # A 図's caption is *below* it, so its rectangle reaches up over the prose
+    # that introduces it; there the wording still has to decide.
     prose = pm_figures.pm_parse.looks_prose
     for i, row in enumerate(body):
-        if i in out or row["kind"] in ("caption", "heading") or prose(row["text"]):
+        if i in out or row["kind"] in ("caption", "heading"):
             continue
-        if any(_in_rect(row, r["page"], r["rect"]) for r in regions):
-            out.add(i)
+        for r in regions:
+            if not _in_rect(row, r["page"], r["rect"]):
+                continue
+            if r["label"].startswith("表") or not prose(row["text"]):
+                out.add(i)
+            break
     return out
 
 

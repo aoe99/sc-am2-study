@@ -174,11 +174,10 @@ export default async function renderQuizPm({ view, extra, go, ctx }) {
         if (label && !fig) cap.dataset.fig = label;
         box.append(cap);
       } else if (!b.drawn) {
-        // What is left of a drawing that the crop did not reach is set like the
-        // rest of the 事例. Its own indent in the middle of a paragraph reads as
-        // a mistake, and it is not one the reader can do anything with.
-        box.append(marked(b.text, el('p', {}), blank));
-      } else {
+        // A row the crop did not reach is set like the rest of the 事例. Its own
+        // indent in the middle of a paragraph reads as a mistake, and it is not
+        // one the reader can do anything with. A row the crop *did* reach is in
+        // the picture already, and is not printed a second time.
         box.append(marked(b.text, el('p', {}), blank));
       }
     }
