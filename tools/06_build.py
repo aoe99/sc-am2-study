@@ -1051,6 +1051,23 @@ def build_pm(targets: list[str]) -> tuple[list, list, list]:
     return cases, questions, review
 
 
+# 午前の問題で、規則では直らないものをページ画像で確かめて置き換えた表。斜体の
+# 数式変数（a, b, x, y）を α, 6, ェ, 」と読む、BNF の < を K と読む、といったもの。
+AM_FIXES = {f["id"]: f for f in
+            read_json(Path(__file__).resolve().parent / "am_fixes.json")["fixes"]}
+
+
+def am_apply_fix(qid: str, text: str, choices: dict) -> tuple[str, dict, bool]:
+    fix = AM_FIXES.get(qid)
+    if not fix:
+        return text, choices, False
+    if "text" in fix:
+        text = fix["text"]
+    if "choices" in fix:
+        choices = dict(choices, **fix["choices"])
+    return text, choices, bool(fix.get("dropFigure"))
+
+
 def build(targets: list[str], sections: list[str]) -> tuple:
     meta = {s[0]: s for s in SESSIONS}
     questions, cases, review = [], [], []
@@ -1081,6 +1098,9 @@ def build(targets: list[str], sections: list[str]) -> tuple:
                 ex = expl[sid][str(no)]
                 fig = figs.get(sid, {}).get(str(no)) or {}
                 cfigs = fig.get("choiceFigures", {})
+                q_text, q_choices, drop_fig = am_apply_fix(qid, q["text"], q["choices"])
+                if drop_fig:
+                    fig, cfigs = {}, {}
                 notes = list(q["flags"])
                 odd = odd_by_no.get(str(no))
                 if odd:
@@ -1088,9 +1108,9 @@ def build(targets: list[str], sections: list[str]) -> tuple:
                 # An option is "in the drawing" when it has neither prose nor
                 # a crop of its own, but the question carries artwork.
                 blank = [k for k in CHOICE_KEYS
-                         if not q["choices"].get(k, "").strip() and k not in cfigs]
+                         if not q_choices.get(k, "").strip() and k not in cfigs]
                 as_figure = bool(blank) and bool(fig.get("file"))
-                if len(q["choices"]) != 4 and not as_figure:
+                if len(q_choices) != 4 and not as_figure:
                     notes.append(f"選択肢が{len(q['choices'])}個")
                 if q["mentionsFigure"] and not fig.get("file"):
                     notes.append("図表に言及しているが画像なし")
@@ -1098,8 +1118,8 @@ def build(targets: list[str], sections: list[str]) -> tuple:
                     notes.append(f"正解不一致 IPA={ans} 解説={ex['answer']}")
                 questions.append({
                     "id": qid, "sessionId": sid, "section": sec, "no": no,
-                    "text": q["text"],
-                    "choices": [{"key": k, "text": q["choices"].get(k, "")}
+                    "text": q_text,
+                    "choices": [{"key": k, "text": q_choices.get(k, "")}
                                 for k in CHOICE_KEYS],
                     "answer": ans,
                     "explanation": ex["explanation"],

@@ -490,6 +490,21 @@
    "pattern": "髙",
    "repl": "高",
    "why": "異体字の『髙』。IPAは『高』で組む"
+  },
+  {
+   "pattern": "(?<![A-Za-z0-9])DM2(?![0-9])",
+   "repl": "DMZ",
+   "why": "『DMZ』の Z を 2 と誤読（DM2 という語は無い）"
+  },
+  {
+   "pattern": "製品番量",
+   "repl": "製品番号",
+   "why": "『号』を『量』と誤読"
+  },
+  {
+   "pattern": "GPU(?=クロック)",
+   "repl": "CPU",
+   "why": "『CPU』の C を G と誤読"
   }
  ],
  "flagPatterns": [

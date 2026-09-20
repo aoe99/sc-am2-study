@@ -13,7 +13,7 @@ from __future__ import annotations
 import difflib, json, re, sys, unicodedata
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from sclib import (CHOICE_KEYS, SECTIONS, PDFTOOL, build_dir, clean, pdf_path,
+from sclib import (CHOICE_KEYS, SECTIONS, PDFTOOL, RUBY, build_dir, clean, pdf_path,
                    question_count, read_json, run_tool, section_of, targets_of,
                    write_json)
 import tempfile
@@ -421,11 +421,21 @@ def _assign_partial(block, cands, miss):
     return None
 
 
+RUBY_READINGS = {reading for reading, _ in RUBY}
+
+
+def _is_ruby(line: dict) -> bool:
+    return line["text"].strip() in RUBY_READINGS
+
+
 def _widest_gap(block: list[dict]) -> int:
     """Where the prose stops and the artwork starts: the tallest vertical hole
     in the first part of the block."""
     best, best_gap = len(block), 0.0
-    limit = max(2, int(len(block) * 0.7))
+    # Inclusive: with seven lines the prose can end at the fourth, and the
+    # hole below it is the one that matters (平30春 問8's B+木 lost its last
+    # sentence to the drawing for want of it).
+    limit = max(2, int(len(block) * 0.7) + 1)
     for i in range(1, limit):
         a, b = block[i - 1], block[i]
         if b["page"] != a["page"]:
@@ -448,7 +458,13 @@ def split_figure(qblock: list[dict], base_x: float):
     for n in range(1, len(qblock)):
         prev, ln = qblock[n - 1], qblock[n]
         t = ln["text"].strip()
-        if ln["x"] > base_x + 0.15 or CAPTION.match(ln["text"]):
+        # A caption never opens mid-sentence. "サイバーセキュリティ経営ガイドライン"
+        # wraps onto "（Ver1.1）”の説明はどれか。", and that line is the rest of the
+        # question, not a caption — the bracket is the only thing they share.
+        # Twelve questions lost their last line this way.
+        caption = (CAPTION.match(ln["text"])
+                   and ENDS_SENTENCE.search(prev["text"]))
+        if ln["x"] > base_x + 0.15 or caption:
             # The wide line may be the second cell of a header row whose first
             # cell is barely indented ("第1正規形 | 第2正規形 | …"). Back up over
             # anything sharing its baseline so the row is not cut in half.
@@ -473,7 +489,13 @@ def split_choices(block: list[dict], flags: list[str], inferred: set):
         flags.append("選択肢を特定できず、選択肢領域を丸ごと画像化")
         cut = _widest_gap(block)
         return block[:cut], {}, block[cut:], [], False
-    qlines, figure = split_figure(block[:idx[0]], block[0]["x"])
+    # IPA sets ふりがな as its own text run, and it comes back as a two-character
+    # line set well to the right of the margin — which is exactly what the
+    # figure test looks for. The reading is not content (脆 is in the line it
+    # annotates), so it is dropped before the split rather than allowed to open
+    # a drawing that swallows the rest of the question.
+    qlines, figure = split_figure([l for l in block[:idx[0]] if not _is_ruby(l)],
+                                  block[0]["x"])
     choices: dict[str, list[dict]] = {}
     for n, key in enumerate(CHOICE_KEYS):
         start = idx[n]
